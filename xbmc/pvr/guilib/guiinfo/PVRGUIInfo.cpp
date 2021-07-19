@@ -46,6 +46,7 @@
 
 using namespace PVR;
 using namespace KODI::GUILIB::GUIINFO;
+using namespace std::chrono_literals;
 
 CPVRGUIInfo::CPVRGUIInfo() : CThread("PVRGUIInfo")
 {
@@ -100,7 +101,7 @@ void CPVRGUIInfo::ClearQualityInfo(PVR_SIGNAL_STATUS& qualityInfo)
 
 void CPVRGUIInfo::ClearDescrambleInfo(PVR_DESCRAMBLE_INFO& descrambleInfo)
 {
-  descrambleInfo = {0};
+  descrambleInfo = {};
 }
 
 void CPVRGUIInfo::Start()
@@ -185,7 +186,7 @@ void CPVRGUIInfo::Process()
       iLoop = 0;
 
     if (!m_bStop)
-      CThread::Sleep(500);
+      CThread::Sleep(500ms);
   }
 }
 

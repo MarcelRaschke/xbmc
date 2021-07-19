@@ -98,13 +98,13 @@ bool CDVDFileInfo::ExtractThumb(const CFileItem& fileItem,
   auto pInputStream = CDVDFactoryInputStream::CreateInputStream(NULL, item);
   if (!pInputStream)
   {
-    CLog::Log(LOGERROR, "InputStream: Error creating stream for %s", redactPath.c_str());
+    CLog::Log(LOGERROR, "InputStream: Error creating stream for {}", redactPath);
     return false;
   }
 
   if (!pInputStream->Open())
   {
-    CLog::Log(LOGERROR, "InputStream: Error opening, %s", redactPath.c_str());
+    CLog::Log(LOGERROR, "InputStream: Error opening, {}", redactPath);
     return false;
   }
 
@@ -115,13 +115,13 @@ bool CDVDFileInfo::ExtractThumb(const CFileItem& fileItem,
     pDemuxer = CDVDFactoryDemuxer::CreateDemuxer(pInputStream, true);
     if(!pDemuxer)
     {
-      CLog::Log(LOGERROR, "%s - Error creating demuxer", __FUNCTION__);
+      CLog::Log(LOGERROR, "{} - Error creating demuxer", __FUNCTION__);
       return false;
     }
   }
   catch(...)
   {
-    CLog::Log(LOGERROR, "%s - Exception thrown when opening demuxer", __FUNCTION__);
+    CLog::Log(LOGERROR, "{} - Exception thrown when opening demuxer", __FUNCTION__);
     if (pDemuxer)
       delete pDemuxer;
 
@@ -185,7 +185,6 @@ bool CDVDFileInfo::ExtractThumb(const CFileItem& fileItem,
 
   if (nVideoStream != -1)
   {
-    CDVDVideoCodec *pVideoCodec;
     std::unique_ptr<CProcessInfo> pProcessInfo(CProcessInfo::CreateInstance());
     std::vector<AVPixelFormat> pixFmts;
     pixFmts.push_back(AV_PIX_FMT_YUV420P);
@@ -194,14 +193,17 @@ bool CDVDFileInfo::ExtractThumb(const CFileItem& fileItem,
     CDVDStreamInfo hint(*pDemuxer->GetStream(demuxerId, nVideoStream), true);
     hint.codecOptions = CODEC_FORCE_SOFTWARE;
 
-    pVideoCodec = CDVDFactoryCodec::CreateVideoCodec(hint, *pProcessInfo);
+    std::unique_ptr<CDVDVideoCodec> pVideoCodec =
+        CDVDFactoryCodec::CreateVideoCodec(hint, *pProcessInfo);
 
     if (pVideoCodec)
     {
       int nTotalLen = pDemuxer->GetStreamLength();
       int64_t nSeekTo = (pos == -1) ? nTotalLen / 3 : pos;
 
-      CLog::Log(LOGDEBUG, "%s - seeking to pos %lldms (total: %dms) in %s", __FUNCTION__, nSeekTo, nTotalLen, redactPath.c_str());
+      CLog::Log(LOGDEBUG, "{} - seeking to pos {}ms (total: {}ms) in {}", __FUNCTION__, nSeekTo,
+                nTotalLen, redactPath);
+
       if (pDemuxer->SeekTime(static_cast<double>(nSeekTo), true))
       {
         CDVDVideoCodec::VCReturn iDecoderState = CDVDVideoCodec::VC_NONE;
@@ -279,10 +281,10 @@ bool CDVDFileInfo::ExtractThumb(const CFileItem& fileItem,
         }
         else
         {
-          CLog::Log(LOGDEBUG,"%s - decode failed in %s after %d packets.", __FUNCTION__, redactPath.c_str(), packetsTried);
+          CLog::Log(LOGDEBUG, "{} - decode failed in {} after {} packets.", __FUNCTION__,
+                    redactPath, packetsTried);
         }
       }
-      delete pVideoCodec;
     }
   }
 

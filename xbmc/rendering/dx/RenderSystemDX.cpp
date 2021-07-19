@@ -39,6 +39,7 @@ using namespace KODI;
 using namespace DirectX;
 using namespace DirectX::PackedVector;
 using namespace Microsoft::WRL;
+using namespace std::chrono_literals;
 
 CRenderSystemDX::CRenderSystemDX() : CRenderSystemBase()
   , m_interlaced(false)
@@ -158,7 +159,7 @@ void CRenderSystemDX::CheckInterlacedStereoView()
     DXGI_FORMAT texFormat = m_deviceResources->GetBackBuffer().GetFormat();
     if (!m_rightEyeTex.Create(outputSize.Width, outputSize.Height, 1, D3D11_USAGE_DEFAULT, texFormat))
     {
-      CLog::Log(LOGERROR, "%s - Failed to create right eye buffer.", __FUNCTION__);
+      CLog::Log(LOGERROR, "{} - Failed to create right eye buffer.", __FUNCTION__);
       CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoMode(RENDER_STEREO_MODE_SPLIT_HORIZONTAL); // try fallback to split horizontal
     }
     else
@@ -285,7 +286,7 @@ void CRenderSystemDX::PresentRender(bool rendered, bool videoLayer)
     timer.Set(5);
     while (!m_decodingTimer.IsTimePast() && !timer.IsTimePast())
     {
-      m_decodingEvent.wait(lock, 1);
+      m_decodingEvent.wait(lock, 1ms);
     }
   }
 

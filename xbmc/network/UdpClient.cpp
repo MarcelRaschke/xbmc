@@ -20,6 +20,8 @@
 
 #include <arpa/inet.h>
 
+using namespace std::chrono_literals;
+
 #define UDPCLIENT_DEBUG_LEVEL LOGDEBUG
 
 CUdpClient::CUdpClient(void) : CThread("UDPClient")
@@ -130,7 +132,7 @@ bool CUdpClient::Send(struct sockaddr_in aAddress, unsigned char* pMessage, DWOR
 
 void CUdpClient::Process()
 {
-  CThread::Sleep(2000);
+  CThread::Sleep(2000ms);
 
   CLog::Log(UDPCLIENT_DEBUG_LEVEL, "UDPCLIENT: Listening.");
 
@@ -181,14 +183,13 @@ void CUdpClient::Process()
         auto timestamp =
             std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
 
-        CLog::Log(UDPCLIENT_DEBUG_LEVEL, "UDPCLIENT RX: {}\t\t<- '{}'", timestamp.count(),
-                  message.c_str());
+        CLog::Log(UDPCLIENT_DEBUG_LEVEL, "UDPCLIENT RX: {}\t\t<- '{}'", timestamp.count(), message);
 
         OnMessage(remoteAddress, message, reinterpret_cast<unsigned char*>(messageBuffer), messageLength);
       }
       else
       {
-        CLog::Log(UDPCLIENT_DEBUG_LEVEL, "UDPCLIENT: Socket error %u", WSAGetLastError());
+        CLog::Log(UDPCLIENT_DEBUG_LEVEL, "UDPCLIENT: Socket error {}", WSAGetLastError());
       }
 
       // is there any more data to read?
@@ -248,7 +249,7 @@ bool CUdpClient::DispatchNextCommand()
     auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
 
     CLog::Log(UDPCLIENT_DEBUG_LEVEL, "UDPCLIENT TX: {}\t\t-> '{}'", timestamp.count(),
-              command.message.c_str());
+              command.message);
 
     do
     {

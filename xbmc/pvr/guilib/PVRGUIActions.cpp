@@ -572,7 +572,7 @@ namespace PVR
             return;
         }
 
-        m_actions.insert(std::make_pair(eAction, m_actions.size()));
+        m_actions.insert(std::make_pair(eAction, static_cast<int>(m_actions.size())));
       }
     }
 
@@ -1518,20 +1518,15 @@ namespace PVR
       return false;
 
     bool playRadio = (iAction == STARTUP_ACTION_PLAY_RADIO);
-    const std::shared_ptr<CPVRChannelGroupsContainer> groups =
-        CServiceBroker::GetPVRManager().ChannelGroups();
-    std::shared_ptr<CPVRChannelGroup> group = groups->Get(playRadio)->GetLastPlayedGroup();
-    if (!group)
-      group = groups->Get(playRadio)->GetGroupAll();
 
-    if (!group)
-      return false;
+    // get the last played channel or fallback to first channel of all channels group
+    std::shared_ptr<CPVRChannelGroupMember> groupMember =
+        CServiceBroker::GetPVRManager().PlaybackState()->GetLastPlayedChannelGroupMember(playRadio);
 
-    // get the last played channel or fallback to first channel
-    std::shared_ptr<CPVRChannelGroupMember> groupMember = group->GetLastPlayedChannelGroupMember();
     if (!groupMember)
     {
-      // fallback to first channel
+      const std::shared_ptr<CPVRChannelGroup> group =
+          CServiceBroker::GetPVRManager().ChannelGroups()->Get(playRadio)->GetGroupAll();
       auto channels = group->GetMembers();
       if (channels.empty())
         return false;
@@ -1543,7 +1538,6 @@ namespace PVR
 
     CLog::Log(LOGINFO, "PVR is starting playback of channel '{}'",
               groupMember->Channel()->ChannelName());
-    CServiceBroker::GetPVRManager().PlaybackState()->SetActiveChannelGroup(group);
     return SwitchToChannel(std::make_shared<CFileItem>(groupMember), true);
   }
 
@@ -1551,9 +1545,13 @@ namespace PVR
   {
     CFileItemPtr pvrItem(item);
     if (URIUtils::IsPVRChannel(item->GetPath()) && !item->HasPVRChannelInfoTag())
-      pvrItem = std::make_shared<CFileItem>(
+    {
+      const std::shared_ptr<CPVRChannelGroupMember> groupMember =
           CServiceBroker::GetPVRManager().ChannelGroups()->GetChannelGroupMemberByPath(
-              item->GetPath()));
+              item->GetPath());
+      if (groupMember)
+        pvrItem = std::make_shared<CFileItem>(groupMember);
+    }
     else if (URIUtils::IsPVRRecording(item->GetPath()) && !item->HasPVRRecordingInfoTag())
       pvrItem = std::make_shared<CFileItem>(CServiceBroker::GetPVRManager().Recordings()->GetByPath(item->GetPath()));
 
@@ -1626,7 +1624,7 @@ namespace PVR
       if (!scanClient)
       {
         CLog::LogF(LOGERROR,
-                   "Provided client id '%d' could not be found in list of possible scan clients!",
+                   "Provided client id '{}' could not be found in list of possible scan clients!",
                    clientId);
         m_bChannelScanRunning = false;
         return false;
@@ -2486,14 +2484,12 @@ namespace PVR
             const std::vector<std::shared_ptr<CPVRChannelGroup>> groups = groupAccess->GetMembers(true);
             for (const auto& currentGroup : groups)
             {
+              if (currentGroup == group) // we have already checked this group
+                continue;
+
               groupMember = currentGroup->GetByChannelNumber(channelNumber);
               if (groupMember)
-              {
-                // switch channel group
-                CServiceBroker::GetPVRManager().PlaybackState()->SetActiveChannelGroup(
-                    currentGroup);
                 break;
-              }
             }
           }
 
@@ -2512,26 +2508,23 @@ namespace PVR
 
   void CPVRChannelSwitchingInputHandler::SwitchToPreviousChannel()
   {
-    if (CServiceBroker::GetPVRManager().PlaybackState()->IsPlaying())
+    const std::shared_ptr<CPVRPlaybackState> playbackState =
+        CServiceBroker::GetPVRManager().PlaybackState();
+    if (playbackState->IsPlaying())
     {
-      const std::shared_ptr<CPVRChannel> playingChannel = CServiceBroker::GetPVRManager().PlaybackState()->GetPlayingChannel();
+      const std::shared_ptr<CPVRChannel> playingChannel = playbackState->GetPlayingChannel();
       if (playingChannel)
       {
-        const std::shared_ptr<CPVRChannelGroup> group = CServiceBroker::GetPVRManager().ChannelGroups()->GetPreviousPlayedGroup();
-        if (group)
+        const std::shared_ptr<CPVRChannelGroupMember> groupMember =
+            playbackState->GetPreviousToLastPlayedChannelGroupMember(playingChannel->IsRadio());
+        if (groupMember)
         {
-          CServiceBroker::GetPVRManager().PlaybackState()->SetActiveChannelGroup(group);
-          const std::shared_ptr<CPVRChannelGroupMember> groupMember =
-              group->GetLastPlayedChannelGroupMember(playingChannel->ChannelID());
-          if (groupMember)
-          {
-            const CPVRChannelNumber channelNumber = groupMember->ChannelNumber();
-            CApplicationMessenger::GetInstance().SendMsg(
+          const CPVRChannelNumber channelNumber = groupMember->ChannelNumber();
+          CApplicationMessenger::GetInstance().SendMsg(
               TMSG_GUI_ACTION, WINDOW_INVALID, -1,
-              static_cast<void*>(new CAction(ACTION_CHANNEL_SWITCH,
-                                             static_cast<float>(channelNumber.GetChannelNumber()),
-                                             static_cast<float>(channelNumber.GetSubChannelNumber()))));
-          }
+              static_cast<void*>(new CAction(
+                  ACTION_CHANNEL_SWITCH, static_cast<float>(channelNumber.GetChannelNumber()),
+                  static_cast<float>(channelNumber.GetSubChannelNumber()))));
         }
       }
     }

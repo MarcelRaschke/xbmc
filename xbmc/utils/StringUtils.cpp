@@ -336,24 +336,58 @@ wchar_t toupperUnicode(const wchar_t& c)
   return c;
 }
 
+template<typename Str, typename Fn>
+void transformString(const Str& input, Str& output, Fn fn)
+{
+  std::transform(input.begin(), input.end(), output.begin(), fn);
+}
+
+std::string StringUtils::ToUpper(const std::string& str)
+{
+  std::string result(str.size(), '\0');
+  transformString(str, result, ::toupper);
+  return result;
+}
+
+std::wstring StringUtils::ToUpper(const std::wstring& str)
+{
+  std::wstring result(str.size(), '\0');
+  transformString(str, result, toupperUnicode);
+  return result;
+}
+
 void StringUtils::ToUpper(std::string &str)
 {
-  std::transform(str.begin(), str.end(), str.begin(), ::toupper);
+  transformString(str, str, ::toupper);
 }
 
 void StringUtils::ToUpper(std::wstring &str)
 {
-  transform(str.begin(), str.end(), str.begin(), toupperUnicode);
+  transformString(str, str, toupperUnicode);
+}
+
+std::string StringUtils::ToLower(const std::string& str)
+{
+  std::string result(str.size(), '\0');
+  transformString(str, result, ::tolower);
+  return result;
+}
+
+std::wstring StringUtils::ToLower(const std::wstring& str)
+{
+  std::wstring result(str.size(), '\0');
+  transformString(str, result, tolowerUnicode);
+  return result;
 }
 
 void StringUtils::ToLower(std::string &str)
 {
-  transform(str.begin(), str.end(), str.begin(), ::tolower);
+  transformString(str, str, ::tolower);
 }
 
 void StringUtils::ToLower(std::wstring &str)
 {
-  transform(str.begin(), str.end(), str.begin(), tolowerUnicode);
+  transformString(str, str, tolowerUnicode);
 }
 
 void StringUtils::ToCapitalize(std::string &str)
@@ -1497,7 +1531,7 @@ std::string StringUtils::SizeToString(int64_t size)
   }
 
   if (!i)
-    strLabel = StringUtils::Format("%.lf B", s);
+    strLabel = StringUtils::Format("{:.2f} B", s);
   else if (i == ARRAY_SIZE(prefixes))
   {
     if (s >= 1000.0)
@@ -1808,4 +1842,9 @@ std::string StringUtils::FormatFileSize(uint64_t bytes)
 const std::locale& StringUtils::GetOriginalLocale() noexcept
 {
   return g_langInfo.GetOriginalLocale();
+}
+
+std::string StringUtils::CreateFromCString(const char* cstr)
+{
+  return cstr != nullptr ? std::string(cstr) : std::string();
 }

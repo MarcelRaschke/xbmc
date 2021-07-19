@@ -16,6 +16,8 @@
 #include <functional>
 #include <stdexcept>
 
+using namespace std::chrono_literals;
+
 bool CJob::ShouldCancel(unsigned int progress, unsigned int total) const
 {
   if (m_callback)
@@ -56,7 +58,7 @@ void CJobWorker::Process()
     }
     catch (...)
     {
-      CLog::Log(LOGERROR, "%s error processing job %s", __FUNCTION__, job->GetType());
+      CLog::Log(LOGERROR, "{} error processing job {}", __FUNCTION__, job->GetType());
     }
     m_jobManager->OnJobComplete(success, job);
   }
@@ -371,7 +373,7 @@ CJob *CJobManager::GetNextJob(const CJobWorker *worker)
       return job;
     // no jobs are left - sleep for 30 seconds to allow new jobs to come in
     lock.Leave();
-    bool newJob = m_jobEvent.WaitMSec(30000);
+    bool newJob = m_jobEvent.Wait(30000ms);
     lock.Enter();
     if (!newJob)
       break;
@@ -421,7 +423,7 @@ void CJobManager::OnJobComplete(bool success, CJob *job)
     }
     catch (...)
     {
-      CLog::Log(LOGERROR, "%s error processing job %s", __FUNCTION__, item.m_job->GetType());
+      CLog::Log(LOGERROR, "{} error processing job {}", __FUNCTION__, item.m_job->GetType());
     }
     lock.Enter();
     Processing::iterator j = find(m_processing.begin(), m_processing.end(), job);

@@ -1414,7 +1414,8 @@ unsigned int CVideoInfoTag::GetDurationFromMinuteString(const std::string &runti
   if (!duration)
   { // failed for some reason, or zero
     duration = strtoul(runtime.c_str(), NULL, 10);
-    CLog::Log(LOGWARNING, "%s <runtime> should be in minutes. Interpreting '%s' as %u minutes", __FUNCTION__, runtime.c_str(), duration);
+    CLog::Log(LOGWARNING, "{} <runtime> should be in minutes. Interpreting '{}' as {} minutes",
+              __FUNCTION__, runtime, duration);
   }
   return duration*60;
 }
@@ -1529,9 +1530,12 @@ void CVideoInfoTag::RemoveRating(const std::string& type)
   }
 }
 
-void CVideoInfoTag::SetRatings(RatingMap ratings)
+void CVideoInfoTag::SetRatings(RatingMap ratings, const std::string& defaultRating /* = "" */)
 {
   m_ratings = std::move(ratings);
+
+  if (!defaultRating.empty() && m_ratings.find(defaultRating) != m_ratings.end())
+    m_strDefaultRating = defaultRating;
 }
 
 void CVideoInfoTag::SetVotes(int votes, const std::string& type /* = "" */)

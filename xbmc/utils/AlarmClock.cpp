@@ -21,6 +21,7 @@
 #include <utility>
 
 using namespace KODI::MESSAGING;
+using namespace std::chrono_literals;
 
 CAlarmClock::CAlarmClock() : CThread("AlarmClock")
 {
@@ -70,7 +71,7 @@ void CAlarmClock::Start(const std::string& strName, float n_secs, const std::str
   event.watch.StartZero();
   CSingleLock lock(m_events);
   m_event.insert(make_pair(lowerName,event));
-  CLog::Log(LOGDEBUG,"started alarm with name: %s",lowerName.c_str());
+  CLog::Log(LOGDEBUG, "started alarm with name: {}", lowerName);
 }
 
 void CAlarmClock::Stop(const std::string& strName, bool bSilent /* false */)
@@ -145,7 +146,7 @@ void CAlarmClock::Process()
         else
           strLast = iter->first;
     }
-    CThread::Sleep(100);
+    CThread::Sleep(100ms);
   }
 }
 
