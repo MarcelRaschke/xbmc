@@ -1,12 +1,12 @@
 /*
- *  Copyright (C) 2017-2018 Team Kodi
+ *  Copyright (C) 2017-2025 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
  *  See LICENSES/README.md for more information.
  */
 
-#include "RPRendererDMA.h"
+#include "RPRendererDMAOpenGL.h"
 
 #include "cores/RetroPlayer/buffers/RenderBufferDMA.h"
 #include "cores/RetroPlayer/buffers/RenderBufferPoolDMA.h"
@@ -21,19 +21,20 @@
 using namespace KODI;
 using namespace RETRO;
 
-std::string CRendererFactoryDMA::RenderSystemName() const
+std::string CRendererFactoryDMAOpenGL::RenderSystemName() const
 {
-  return "DMA";
+  return "DMAOpenGL";
 }
 
-CRPBaseRenderer* CRendererFactoryDMA::CreateRenderer(const CRenderSettings& settings,
-                                                     CRenderContext& context,
-                                                     std::shared_ptr<IRenderBufferPool> bufferPool)
+CRPBaseRenderer* CRendererFactoryDMAOpenGL::CreateRenderer(
+    const CRenderSettings& settings,
+    CRenderContext& context,
+    std::shared_ptr<IRenderBufferPool> bufferPool)
 {
-  return new CRPRendererDMA(settings, context, std::move(bufferPool));
+  return new CRPRendererDMAOpenGL(settings, context, std::move(bufferPool));
 }
 
-RenderBufferPoolVector CRendererFactoryDMA::CreateBufferPools(CRenderContext& context)
+RenderBufferPoolVector CRendererFactoryDMAOpenGL::CreateBufferPools(CRenderContext& context)
 {
   if (!CBufferObjectFactory::CreateBufferObject(false))
     return {};
@@ -41,14 +42,14 @@ RenderBufferPoolVector CRendererFactoryDMA::CreateBufferPools(CRenderContext& co
   return {std::make_shared<CRenderBufferPoolDMA>(context)};
 }
 
-CRPRendererDMA::CRPRendererDMA(const CRenderSettings& renderSettings,
-                               CRenderContext& context,
-                               std::shared_ptr<IRenderBufferPool> bufferPool)
-  : CRPRendererOpenGLES(renderSettings, context, std::move(bufferPool))
+CRPRendererDMAOpenGL::CRPRendererDMAOpenGL(const CRenderSettings& renderSettings,
+                                           CRenderContext& context,
+                                           std::shared_ptr<IRenderBufferPool> bufferPool)
+  : CRPRendererOpenGL(renderSettings, context, std::move(bufferPool))
 {
 }
 
-void CRPRendererDMA::Render(uint8_t alpha)
+void CRPRendererDMAOpenGL::Render(uint8_t alpha)
 {
   auto renderBuffer = static_cast<CRenderBufferDMA*>(m_renderBuffer);
   assert(renderBuffer != nullptr);
@@ -76,14 +77,8 @@ void CRPRendererDMA::Render(uint8_t alpha)
 
   GLubyte colour[4];
   GLubyte idx[4] = {0, 1, 3, 2}; // Determines order of triangle strip
-  struct PackedVertex
-  {
-    float x, y, z;
-    float u1, v1;
-  } vertex[4];
+  PackedVertex vertex[4];
 
-  GLint vertLoc = m_context.GUIShaderGetPos();
-  GLint loc = m_context.GUIShaderGetCoord0();
   GLint uniColLoc = m_context.GUIShaderGetUniCol();
   GLint depthLoc = m_context.GUIShaderGetDepth();
 
@@ -107,30 +102,23 @@ void CRPRendererDMA::Render(uint8_t alpha)
   vertex[1].u1 = vertex[2].u1 = rect.x2;
   vertex[2].v1 = vertex[3].v1 = rect.y2;
 
+  glBindVertexArray(m_mainVAO);
+
   glBindBuffer(GL_ARRAY_BUFFER, m_mainVertexVBO);
   glBufferData(GL_ARRAY_BUFFER, sizeof(PackedVertex) * 4, &vertex[0], GL_STATIC_DRAW);
 
-  glVertexAttribPointer(vertLoc, 3, GL_FLOAT, 0, sizeof(PackedVertex),
-                        reinterpret_cast<const GLuint*>(offsetof(PackedVertex, x)));
-  glVertexAttribPointer(loc, 2, GL_FLOAT, 0, sizeof(PackedVertex),
-                        reinterpret_cast<const GLuint*>(offsetof(PackedVertex, u1)));
-
-  glEnableVertexAttribArray(vertLoc);
-  glEnableVertexAttribArray(loc);
-
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_mainIndexVBO);
+  // No need to bind the index VBO, it's part of VAO state
   glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GLubyte) * 4, idx, GL_STATIC_DRAW);
 
   glUniform4f(uniColLoc, (colour[0] / 255.0f), (colour[1] / 255.0f), (colour[2] / 255.0f),
               (colour[3] / 255.0f));
   glUniform1f(depthLoc, -1.0f);
+
   glDrawElements(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, 0);
 
-  glDisableVertexAttribArray(vertLoc);
-  glDisableVertexAttribArray(loc);
-
+  // Unbind VAO/VBO just to be safe
+  glBindVertexArray(0);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
   m_context.DisableGUIShader();
 }

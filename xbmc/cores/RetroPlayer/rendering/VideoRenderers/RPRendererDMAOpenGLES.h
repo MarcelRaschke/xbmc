@@ -16,10 +16,10 @@ namespace KODI
 {
 namespace RETRO
 {
-class CRendererFactoryDMA : public IRendererFactory
+class CRendererFactoryDMAOpenGLES : public IRendererFactory
 {
 public:
-  ~CRendererFactoryDMA() override = default;
+  ~CRendererFactoryDMAOpenGLES() override = default;
 
   // implementation of IRendererFactory
   std::string RenderSystemName() const override;
@@ -35,18 +35,17 @@ public:
  *        CRenderBufferPoolDMA and CRenderBufferDMA. A windowing system
  *        must register use of this renderer and register at least one
  *        CBufferObject types.
- *
  */
-class CRPRendererDMA : public CRPRendererOpenGLES
+class CRPRendererDMAOpenGLES : public CRPRendererOpenGLES
 {
 public:
-  CRPRendererDMA(const CRenderSettings& renderSettings,
-                 CRenderContext& context,
-                 std::shared_ptr<IRenderBufferPool> bufferPool);
-  ~CRPRendererDMA() override = default;
+  CRPRendererDMAOpenGLES(const CRenderSettings& renderSettings,
+                         CRenderContext& context,
+                         std::shared_ptr<IRenderBufferPool> bufferPool);
+  ~CRPRendererDMAOpenGLES() override = default;
 
 protected:
-  // implementation of CRPRendererOpenGLES
+  // Implementation of CRPRendererOpenGLES
   void Render(uint8_t alpha) override;
 };
 } // namespace RETRO

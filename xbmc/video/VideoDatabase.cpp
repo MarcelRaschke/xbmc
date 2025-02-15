@@ -3018,6 +3018,23 @@ int CVideoDatabase::SetDetailsForSeason(const CVideoInfoTag& details, const std:
   return -1;
 }
 
+bool CVideoDatabase::SetFileForMedia(const std::string& fileAndPath,
+                                     VideoDbContentType type,
+                                     int mediaId,
+                                     int oldIdFile)
+{
+  switch (type)
+  {
+    case VideoDbContentType::MOVIES:
+      return SetFileForMovie(fileAndPath, mediaId, oldIdFile);
+    case VideoDbContentType::EPISODES:
+      return SetFileForEpisode(fileAndPath, mediaId, oldIdFile);
+    default:
+      CLog::LogF(LOGDEBUG, "unsupported media type {}", type);
+      return false;
+  }
+}
+
 bool CVideoDatabase::SetFileForEpisode(const std::string& fileAndPath, int idEpisode, int oldIdFile)
 {
   assert(m_pDB->in_transaction());
@@ -6704,10 +6721,9 @@ int CVideoDatabase::GetPlayCount(const std::string& strFilenameAndPath)
 
 int CVideoDatabase::GetPlayCount(const CFileItem &item)
 {
-  if (IsBlurayPlaylist(item))
+  if (URIUtils::IsBlurayPath(item.GetDynPath()))
     return GetPlayCount(GetFileId(item.GetDynPath()));
-  else
-    return GetPlayCount(GetFileId(item));
+  return GetPlayCount(GetFileId(item));
 }
 
 CDateTime CVideoDatabase::GetLastPlayed(int iFileId)
@@ -6778,7 +6794,7 @@ void CVideoDatabase::UpdateFanart(const CFileItem& item, VideoDbContentType type
 CDateTime CVideoDatabase::SetPlayCount(const CFileItem& item, int count, const CDateTime& date)
 {
   int id{-1};
-  if (IsBlurayPlaylist(item))
+  if (URIUtils::IsBlurayPath(item.GetDynPath()))
     id = AddFile(item.GetDynPath());
   else if (item.HasProperty("original_listitem_url") &&
            URIUtils::IsPlugin(item.GetProperty("original_listitem_url").asString()))
