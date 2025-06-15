@@ -22,6 +22,10 @@ if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
 
   set(ACBAPI_VERSION ${PC_ACBAPI_VERSION})
 
+  if(NOT VERBOSE_FIND)
+     set(${CMAKE_FIND_PACKAGE_NAME}_FIND_QUIETLY TRUE)
+   endif()
+
   include(FindPackageHandleStandardArgs)
   find_package_handle_standard_args(AcbAPI
                                     REQUIRED_VARS ACBAPI_LIBRARY ACBAPI_INCLUDE_DIR
@@ -34,8 +38,8 @@ if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
                                                                      INTERFACE_INCLUDE_DIRECTORIES "${ACBAPI_INCLUDE_DIR}")
 
     # creates an empty library to install on webOS 5+ devices
-    file(TOUCH dummy.c)
-    add_library(AcbAPI SHARED dummy.c)
+    file(TOUCH ${CMAKE_CURRENT_BINARY_DIR}/dummy.c)
+    add_library(AcbAPI SHARED ${CMAKE_CURRENT_BINARY_DIR}/dummy.c)
     set_target_properties(AcbAPI PROPERTIES VERSION 1.0.0 SOVERSION 1)
   else()
     if(AcbAPI_FIND_REQUIRED)

@@ -24,11 +24,7 @@ using namespace RETRO;
 CRPBaseRenderer::CRPBaseRenderer(const CRenderSettings& renderSettings,
                                  CRenderContext& context,
                                  std::shared_ptr<IRenderBufferPool> bufferPool)
-  : m_context(context),
-    m_bufferPool(std::move(bufferPool)),
-    m_renderSettings(renderSettings),
-    m_bShadersNeedUpdate(true),
-    m_bUseShaderPreset(false)
+  : m_context(context), m_bufferPool(std::move(bufferPool)), m_renderSettings(renderSettings)
 {
   m_bufferPool->RegisterRenderer(this);
 }
@@ -183,7 +179,7 @@ void CRPBaseRenderer::ManageRenderArea(const IRenderBuffer& renderBuffer)
   // Get screen parameters
   float screenWidth;
   float screenHeight;
-  //! @Todo screenPixelRatio unused - Possibly due to display integer scaling according to Garbear
+  //! @todo screenPixelRatio unused - Possibly due to display integer scaling according to Garbear
   float screenPixelRatio;
 
   if (scaleMode == SCALINGMETHOD::NEAREST && stretchMode == STRETCHMODE::Original &&
