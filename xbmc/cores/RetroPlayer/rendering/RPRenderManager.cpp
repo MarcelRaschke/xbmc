@@ -337,8 +337,15 @@ uintptr_t CRPRenderManager::GetCurrentFramebuffer(unsigned int width, unsigned i
 
 void CRPRenderManager::RenderFrame()
 {
+  // Release any pending hardware-rendered buffers that cannot be presented,
+  // mirroring the pattern in GetVideoBuffer() to prevent resource leaks.
   if (m_bFlush || m_state != RENDER_STATE::CONFIGURED)
+  {
+    for (IRenderBuffer* buffer : m_pendingBuffers)
+      buffer->Release();
+    m_pendingBuffers.clear();
     return;
+  }
 
   // The game core has finished rendering a frame to the hardware framebuffer.
   // Move any pending hardware-rendered buffers into the render buffer set so the
@@ -349,7 +356,6 @@ void CRPRenderManager::RenderFrame()
     renderBuffer->Release();
 
   m_renderBuffers = std::move(m_pendingBuffers);
-  m_pendingBuffers.clear();
 }
 
 void CRPRenderManager::SetSpeed(double speed)
