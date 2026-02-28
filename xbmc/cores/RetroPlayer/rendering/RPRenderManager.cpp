@@ -288,8 +288,33 @@ void CRPRenderManager::DestroyContext()
 
 bool CRPRenderManager::Create(unsigned int width, unsigned int height)
 {
-  //! @todo
-  return false;
+  // This must be called from the rendering thread where the GL context is current.
+  // It is invoked by FrameMove() when hardware rendering (AV_PIX_FMT_NONE) is detected.
+  //
+  // For hardware rendering, renderers are created lazily via GetRendererForSettings()
+  // and the GL framebuffer that the game core renders into is managed by the buffer
+  // pool and returned on demand via GetCurrentFramebuffer().
+  CLog::Log(LOGDEBUG, "RetroPlayer[RENDER]: Initializing hardware rendering context {}x{}", width,
+            height);
+
+  bool bSuccess = false;
+
+  for (IRenderBufferPool* bufferPool : m_processInfo.GetBufferManager().GetBufferPools())
+  {
+    CRenderVideoSettings renderSettings;
+    if (bufferPool->IsCompatible(renderSettings))
+    {
+      CLog::Log(LOGDEBUG, "RetroPlayer[RENDER]: Compatible buffer pool found for hardware rendering");
+      bSuccess = true;
+      break;
+    }
+  }
+
+  if (!bSuccess)
+    CLog::Log(LOGWARNING,
+              "RetroPlayer[RENDER]: No compatible buffer pool found for hardware rendering");
+
+  return bSuccess;
 }
 
 uintptr_t CRPRenderManager::GetCurrentFramebuffer(unsigned int width, unsigned int height)
@@ -312,7 +337,19 @@ uintptr_t CRPRenderManager::GetCurrentFramebuffer(unsigned int width, unsigned i
 
 void CRPRenderManager::RenderFrame()
 {
-  //! @todo
+  if (m_bFlush || m_state != RENDER_STATE::CONFIGURED)
+    return;
+
+  // The game core has finished rendering a frame to the hardware framebuffer.
+  // Move any pending hardware-rendered buffers into the render buffer set so the
+  // render thread can present them on the next RenderWindow/RenderControl call.
+  std::unique_lock lock(m_bufferMutex);
+
+  for (auto renderBuffer : m_renderBuffers)
+    renderBuffer->Release();
+
+  m_renderBuffers = std::move(m_pendingBuffers);
+  m_pendingBuffers.clear();
 }
 
 void CRPRenderManager::SetSpeed(double speed)
@@ -325,12 +362,19 @@ void CRPRenderManager::FrameMove()
   CheckFlush();
 
   bool bIsConfigured = false;
+  bool bNeedsHwCreate = false;
 
   {
     std::unique_lock lock(m_stateMutex);
 
     if (m_state == RENDER_STATE::CONFIGURING)
     {
+      // For hardware rendering (AV_PIX_FMT_NONE), the GL framebuffer must be
+      // created on the render thread where the GL context is current. Signal
+      // that Create() should be called after releasing the state lock.
+      if (m_format == AV_PIX_FMT_NONE)
+        bNeedsHwCreate = true;
+
       m_state = RENDER_STATE::CONFIGURED;
 
       CLog::Log(LOGINFO, "RetroPlayer[RENDER]: Renderer configured on first frame");
@@ -339,6 +383,11 @@ void CRPRenderManager::FrameMove()
     if (m_state == RENDER_STATE::CONFIGURED)
       bIsConfigured = true;
   }
+
+  // Create the hardware framebuffer on the render thread after releasing the state lock.
+  // This ensures the GL context is current during FBO initialization.
+  if (bNeedsHwCreate)
+    Create(m_nominalWidth, m_nominalHeight);
 
   if (bIsConfigured)
   {
