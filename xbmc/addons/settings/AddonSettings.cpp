@@ -1169,13 +1169,6 @@ SettingPtr CAddonSettings::InitializeFromOldSettingAddon(const std::string& sett
     return nullptr;
   }
 
-  // TODO: support multiple addon types
-  if (addonTypes.size() > 1)
-  {
-    m_logger->error(R"(multiple addon types are not supported (addon setting "{}"))", settingId);
-    return nullptr;
-  }
-
   // parse addon ids
   std::vector<std::string> addonIds{StringUtils::Split(defaultValue, ",")};
 
@@ -1192,7 +1185,7 @@ SettingPtr CAddonSettings::InitializeFromOldSettingAddon(const std::string& sett
   }
 
   const auto settingAddon{std::make_shared<CSettingAddon>(settingId, GetSettingsManager())};
-  settingAddon->SetAddonType(*addonTypes.begin());
+  settingAddon->SetAddonTypes(std::vector<ADDON::AddonType>(addonTypes.begin(), addonTypes.end()));
 
   SettingPtr setting = settingAddon;
   if (multiselect)

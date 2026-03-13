@@ -27,6 +27,8 @@
 #include "utils/StringUtils.h"
 #include "windowing/WinSystem.h"
 
+#include <algorithm>
+
 namespace
 {
 bool AddonHasSettings(const std::string& condition,
@@ -42,10 +44,21 @@ bool AddonHasSettings(const std::string& condition,
 
   ADDON::AddonPtr addon;
   if (!CServiceBroker::GetAddonMgr().GetAddon(settingAddon->GetValue(), addon,
-                                              settingAddon->GetAddonType(),
                                               ADDON::OnlyEnabled::CHOICE_YES) ||
       !addon)
     return false;
+
+  // Verify that the addon matches one of the expected types
+  const auto& addonTypes = settingAddon->GetAddonTypes();
+  if (!addonTypes.empty())
+  {
+    const bool typeMatch =
+        std::any_of(addonTypes.begin(), addonTypes.end(), [&](ADDON::AddonType type) {
+          return CServiceBroker::GetAddonMgr().HasType(settingAddon->GetValue(), type);
+        });
+    if (!typeMatch)
+      return false;
+  }
 
   if (addon->Type() == ADDON::AddonType::SKIN)
     return ((ADDON::CSkinInfo*)addon.get())->HasSkinFile("SkinSettings.xml");

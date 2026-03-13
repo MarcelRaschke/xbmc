@@ -963,7 +963,7 @@ bool CGUIControlButtonSetting::OnClick()
       }
 
       if (CGUIWindowAddonBrowser::SelectAddonID(
-              setting->GetAddonType(), addonIDs, setting->AllowEmpty(),
+              setting->GetAddonTypes(), addonIDs, setting->AllowEmpty(),
               buttonControl->ShowAddonDetails(), m_pSetting->GetType() == SettingType::List,
               buttonControl->ShowInstalledAddons(), buttonControl->ShowInstallableAddons(),
               buttonControl->ShowMoreAddons()) != 1)

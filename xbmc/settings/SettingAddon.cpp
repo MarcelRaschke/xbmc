@@ -12,6 +12,7 @@
 #include "addons/addoninfo/AddonInfo.h"
 #include "addons/addoninfo/AddonType.h"
 #include "settings/lib/SettingsManager.h"
+#include "utils/StringUtils.h"
 #include "utils/XBMCTinyXML.h"
 #include "utils/XMLUtils.h"
 #include "utils/log.h"
@@ -37,6 +38,18 @@ SettingPtr CSettingAddon::Clone(const std::string &id) const
   return std::make_shared<CSettingAddon>(id, *this);
 }
 
+ADDON::AddonType CSettingAddon::GetAddonType() const
+{
+  if (m_addonTypes.empty())
+    return ADDON::AddonType::UNKNOWN;
+  return m_addonTypes.front();
+}
+
+void CSettingAddon::SetAddonType(ADDON::AddonType addonType)
+{
+  m_addonTypes = {addonType};
+}
+
 bool CSettingAddon::Deserialize(const TiXmlNode *node, bool update /* = false */)
 {
   std::unique_lock lock(m_critical);
@@ -55,12 +68,20 @@ bool CSettingAddon::Deserialize(const TiXmlNode *node, bool update /* = false */
   const TiXmlNode* constraints = node->FirstChild("constraints");
   if (constraints)
   {
-    // get the addon type
+    // get the addon type(s) - supports comma-separated list
     if (XMLUtils::GetString(constraints, "addontype", strAddonType) && !strAddonType.empty())
     {
-      m_addonType = ADDON::CAddonInfo::TranslateType(strAddonType);
-      if (m_addonType != ADDON::AddonType::UNKNOWN)
-        ok = true;
+      m_addonTypes.clear();
+      for (auto& typeStr : StringUtils::Split(strAddonType, ","))
+      {
+        const ADDON::AddonType type =
+            ADDON::CAddonInfo::TranslateType(StringUtils::Trim(typeStr));
+        if (type != ADDON::AddonType::UNKNOWN)
+        {
+          m_addonTypes.push_back(type);
+          ok = true;
+        }
+      }
     }
   }
 
@@ -79,5 +100,5 @@ void CSettingAddon::copyaddontype(const CSettingAddon &setting)
   CSettingString::Copy(setting);
 
   std::unique_lock lock(m_critical);
-  m_addonType = setting.m_addonType;
+  m_addonTypes = setting.m_addonTypes;
 }

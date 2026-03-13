@@ -11,6 +11,8 @@
 #include "addons/IAddon.h"
 #include "settings/lib/Setting.h"
 
+#include <vector>
+
 namespace ADDON
 {
 enum class AddonType;
@@ -29,11 +31,13 @@ public:
 
   bool Deserialize(const TiXmlNode *node, bool update = false) override;
 
-  ADDON::AddonType GetAddonType() const { return m_addonType; }
-  void SetAddonType(ADDON::AddonType addonType) { m_addonType = addonType; }
+  ADDON::AddonType GetAddonType() const;
+  void SetAddonType(ADDON::AddonType addonType);
+  const std::vector<ADDON::AddonType>& GetAddonTypes() const { return m_addonTypes; }
+  void SetAddonTypes(std::vector<ADDON::AddonType> addonTypes) { m_addonTypes = std::move(addonTypes); }
 
 private:
   void copyaddontype(const CSettingAddon &setting);
 
-  ADDON::AddonType m_addonType{};
+  std::vector<ADDON::AddonType> m_addonTypes;
 };
