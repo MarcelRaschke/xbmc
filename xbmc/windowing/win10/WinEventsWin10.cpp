@@ -320,8 +320,10 @@ void CWinEventsWin10::OnPointerPressed(const CoreWindow&, const PointerEventArgs
     }
     else if (point.PointerDevice().PointerDeviceType() == PointerDeviceType::Pen)
     {
-      // pen
-      // TODO
+      if (point.Properties().IsBarrelButtonPressed())
+        newEvent.button.button = XBMC_BUTTON_RIGHT;
+      else
+        newEvent.button.button = XBMC_BUTTON_LEFT;
     }
   }
   MessagePush(&newEvent);
