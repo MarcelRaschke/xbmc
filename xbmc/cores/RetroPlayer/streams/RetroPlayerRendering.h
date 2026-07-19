@@ -91,6 +91,9 @@ private:
   // Construction parameters
   CRPRenderManager& m_renderManager;
   CRPProcessInfo& m_processInfo;
+
+  // Stream state
+  GAME_HW_CONTEXT_TYPE m_contextType{GAME_HW_CONTEXT_NONE};
 };
 } // namespace RETRO
 } // namespace KODI
