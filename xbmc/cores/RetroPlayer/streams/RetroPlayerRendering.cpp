@@ -34,37 +34,50 @@ CRetroPlayerRendering::~CRetroPlayerRendering()
 
 bool CRetroPlayerRendering::OpenStream(const StreamProperties& properties)
 {
-  [[maybe_unused]] const HwFramebufferProperties& hwProperties =
+  const HwFramebufferProperties& hwProperties =
       static_cast<const HwFramebufferProperties&>(properties);
 
-  //! @todo
+  // For hardware rendering, pixel data is managed by the GPU directly.
+  // The pixel format is AV_PIX_FMT_NONE to signal GPU-direct rendering.
   const AVPixelFormat pixelFormat = AV_PIX_FMT_NONE;
+
+  // Use conservative default dimensions for the initial configuration.
+  // The game core will provide the actual dimensions via GetStreamBuffer callbacks.
   const unsigned int width = 640;
   const unsigned int height = 480;
   const float displayAspectRatio = 0.0f; // 0.0f means square pixels
 
-  CLog::Log(LOGDEBUG, "RetroPlayer[RENDERING]: Creating rendering stream - width {}, height {}",
-            width, height);
+  CLog::Log(LOGDEBUG,
+            "RetroPlayer[RENDERING]: Opening hardware rendering stream - context type {}, "
+            "version {}.{}, depth={}, stencil={}",
+            static_cast<int>(hwProperties.contextType), hwProperties.versionMajor,
+            hwProperties.versionMinor, hwProperties.depth, hwProperties.stencil);
+
+  m_contextType = hwProperties.contextType;
 
   m_processInfo.SetVideoPixelFormat(pixelFormat);
   m_processInfo.SetVideoDimensions(width, height);
 
   if (!m_renderManager.Configure(pixelFormat, width, height, displayAspectRatio, width, height))
+  {
+    CLog::Log(LOGERROR,
+              "RetroPlayer[RENDERING]: Failed to configure render manager for hardware rendering");
     return false;
+  }
 
-  CLog::Log(LOGDEBUG, "RetroPlayer[RENDERING]: Render manager configured");
+  CLog::Log(LOGDEBUG, "RetroPlayer[RENDERING]: Hardware rendering stream opened successfully");
 
-  //! @todo: This must be called from the rendering thread
-  //return m_renderManager.Create(width, height);
-
-  return false;
+  // The GL framebuffer (Create) must be called from the rendering thread.
+  // CRPRenderManager::FrameMove() detects hardware rendering via AV_PIX_FMT_NONE
+  // and calls Create() at the appropriate time on the render thread.
+  return true;
 }
 
 void CRetroPlayerRendering::CloseStream()
 {
-  CLog::Log(LOGDEBUG, "RetroPlayer[RENDERING]: Closing rendering stream");
+  CLog::Log(LOGDEBUG, "RetroPlayer[RENDERING]: Closing hardware rendering stream");
 
-  //! @todo
+  m_renderManager.Flush();
 }
 
 bool CRetroPlayerRendering::GetStreamBuffer(unsigned int width,
