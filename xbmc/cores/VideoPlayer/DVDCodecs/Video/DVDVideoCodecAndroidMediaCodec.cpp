@@ -921,7 +921,7 @@ bool CDVDVideoCodecAndroidMediaCodec::Open(CDVDStreamInfo &hints, CDVDCodecOptio
 
   if (m_codecname.starts_with("OMX.Nvidia"))
     m_invalidPTSValue = AV_NOPTS_VALUE;
-  else if (m_codecname.starts_with("OMX.MTK"))
+  else if (m_codecname.starts_with("OMX.MTK") || m_codecname.starts_with("c2.mtk"))
     m_invalidPTSValue = -1; //Use DTS
   else
     m_invalidPTSValue = 0;
@@ -1300,7 +1300,8 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAndroidMediaCodec::GetPicture(VideoPictur
     // try to fetch an input buffer
     if (m_indexInputBuffer < 0)
     {
-      m_indexInputBuffer = m_codec->dequeueInputBuffer(5000 /*timeout*/);
+      m_indexInputBuffer =
+          m_codec->dequeueInputBuffer((m_codecControlFlags & DVD_CODEC_CTRL_DROP) ? 0 : 5000);
       if (xbmc_jnienv()->ExceptionCheck())
       {
         xbmc_jnienv()->ExceptionDescribe();
@@ -1617,6 +1618,10 @@ int CDVDVideoCodecAndroidMediaCodec::GetOutputPicture(void)
 {
   int rtn = 0;
   int64_t timeout_us = (m_state == MEDIACODEC_STATE_WAIT_ENDOFSTREAM) ? 100000 : 10000;
+
+  if (m_codecControlFlags & DVD_CODEC_CTRL_DROP)
+    timeout_us = 0;
+
   CJNIMediaCodecBufferInfo bufferInfo;
 
   ssize_t index = m_codec->dequeueOutputBuffer(bufferInfo, timeout_us);
@@ -1735,17 +1740,17 @@ void CDVDVideoCodecAndroidMediaCodec::ConfigureOutputFormat(CJNIMediaFormat& med
   if (mediaformat.containsKey(CJNIMediaFormat::KEY_SLICE_HEIGHT))
     slice_height = mediaformat.getInteger(CJNIMediaFormat::KEY_SLICE_HEIGHT);
 
-  if (CJNIBase::GetSDKVersion() >= 33)
-  {
-    if (mediaformat.containsKey(CJNIMediaFormat::KEY_CROP_LEFT))
-      crop_left = mediaformat.getInteger(CJNIMediaFormat::KEY_CROP_LEFT);
-    if (mediaformat.containsKey(CJNIMediaFormat::KEY_CROP_TOP))
-      crop_top = mediaformat.getInteger(CJNIMediaFormat::KEY_CROP_TOP);
-    if (mediaformat.containsKey(CJNIMediaFormat::KEY_CROP_RIGHT))
-      crop_right = mediaformat.getInteger(CJNIMediaFormat::KEY_CROP_RIGHT);
-    if (mediaformat.containsKey(CJNIMediaFormat::KEY_CROP_BOTTOM))
-      crop_bottom = mediaformat.getInteger(CJNIMediaFormat::KEY_CROP_BOTTOM);
-  }
+  // Use the crop keys directly instead of the constants defined in the MediaFormat class.
+  // These constants were formally introduced in API 33, but they had already been used
+  // directly in previous versions.
+  if (mediaformat.containsKey("crop-left"))
+    crop_left = mediaformat.getInteger("crop-left");
+  if (mediaformat.containsKey("crop-top"))
+    crop_top = mediaformat.getInteger("crop-top");
+  if (mediaformat.containsKey("crop-right"))
+    crop_right = mediaformat.getInteger("crop-right");
+  if (mediaformat.containsKey("crop-bottom"))
+    crop_bottom = mediaformat.getInteger("crop-bottom");
 
   // Note: These properties are not documented in the Android SDK but
   // are available in the MediaFormat object.

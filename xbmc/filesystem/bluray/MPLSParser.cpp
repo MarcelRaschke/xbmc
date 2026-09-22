@@ -326,6 +326,7 @@ bool ParseCLPI(std::vector<std::byte>& buffer, ClipInformation& clipInformation,
 
   clipInformation.version = version;
   clipInformation.clip = clip;
+  clipInformation.streamsRead = true;
 
   const unsigned int programInformationStartAddress{
       GetDWord(buffer, OFFSET_CLPI_PROGRAM_INFORMATION)};
@@ -385,8 +386,8 @@ constexpr unsigned int OFFSET_STREAM_TABLE_NUM_VIDEO_STREAMS = 4;
 constexpr unsigned int OFFSET_STREAM_TABLE_NUM_AUDIO_STREAMS = 5;
 constexpr unsigned int OFFSET_STREAM_TABLE_NUM_PG_STREAMS = 6;
 constexpr unsigned int OFFSET_STREAM_TABLE_NUM_IG_STREAMS = 7;
-constexpr unsigned int OFFSET_STREAM_TABLE_NUM_SECONDARY_VIDEO_STREAMS = 8;
-constexpr unsigned int OFFSET_STREAM_TABLE_NUM_SECONDARY_AUDIO_STREAMS = 9;
+constexpr unsigned int OFFSET_STREAM_TABLE_NUM_SECONDARY_AUDIO_STREAMS = 8;
+constexpr unsigned int OFFSET_STREAM_TABLE_NUM_SECONDARY_VIDEO_STREAMS = 9;
 constexpr unsigned int OFFSET_STREAM_TABLE_NUM_PIP_STREAMS = 10;
 constexpr unsigned int OFFSET_STREAM_TABLE_NUM_DV_STREAMS = 11;
 
@@ -500,10 +501,10 @@ bool ParsePlayItem(std::vector<std::byte>& buffer,
       GetByte(buffer, offset + OFFSET_STREAM_TABLE_NUM_PG_STREAMS)};
   const unsigned int numInteractiveGraphicStreams{
       GetByte(buffer, offset + OFFSET_STREAM_TABLE_NUM_IG_STREAMS)};
-  const unsigned int numSecondaryVideoStreams{
-      GetByte(buffer, offset + OFFSET_STREAM_TABLE_NUM_SECONDARY_VIDEO_STREAMS)};
   const unsigned int numSecondaryAudioStreams{
       GetByte(buffer, offset + OFFSET_STREAM_TABLE_NUM_SECONDARY_AUDIO_STREAMS)};
+  const unsigned int numSecondaryVideoStreams{
+      GetByte(buffer, offset + OFFSET_STREAM_TABLE_NUM_SECONDARY_VIDEO_STREAMS)};
   const unsigned int numPictureInPictureSubtitleStreams{
       GetByte(buffer, offset + OFFSET_STREAM_TABLE_NUM_PIP_STREAMS)};
   const unsigned int numDolbyVisionStreams{
@@ -536,6 +537,15 @@ bool ParsePlayItem(std::vector<std::byte>& buffer,
   {
     playItem.presentationGraphicStreams.emplace_back(
         ParseStream(buffer, offset, STREAM_TYPE::PRESENTATION_GRAPHIC_STREAM));
+  }
+
+  // The picture-in-picture subtitle entries share the presentation graphic block, immediately
+  // following it
+  playItem.pictureInPictureSubtitleStreams.reserve(numPictureInPictureSubtitleStreams);
+  for (unsigned int k = 0; k < numPictureInPictureSubtitleStreams; ++k)
+  {
+    playItem.pictureInPictureSubtitleStreams.emplace_back(
+        ParseStream(buffer, offset, STREAM_TYPE::PICTURE_IN_PICTURE_SUBTITLE_STREAM));
   }
 
   playItem.interactiveGraphicStreams.reserve(numInteractiveGraphicStreams);
@@ -703,7 +713,8 @@ constexpr unsigned int OFFSET_MPLS_PLAYLISTMARK_DURATION = 10;
 
 bool ProcessClips(const CURL& url,
                   BlurayPlaylistInformation& playlistInformation,
-                  std::map<unsigned int, ClipInformation>& clipCache)
+                  std::map<unsigned int, ClipInformation>& clipCache,
+                  StreamDetails streamDetails)
 {
   for (const auto& playItem : playlistInformation.playItems)
   {
@@ -713,6 +724,15 @@ bool ProcessClips(const CURL& url,
       {
         // In local cache
         playlistInformation.clips.push_back(it->second);
+        continue;
+      }
+
+      if (streamDetails == StreamDetails::DEFER)
+      {
+        // The .clpi holds nothing but the clip's stream information, and reading one per clip is
+        // the bulk of the cost of examining a disc. Record the clip as named by the play item -
+        // its timings are derived from the play item anyway (see DeriveChaptersAndTimings).
+        playlistInformation.clips.push_back(clip);
         continue;
       }
 
@@ -763,7 +783,8 @@ bool ParsePlaylist(const CURL& url,
                    std::vector<std::byte>& buffer,
                    unsigned int& offset,
                    BlurayPlaylistInformation& playlistInformation,
-                   std::map<unsigned int, ClipInformation>& clipCache)
+                   std::map<unsigned int, ClipInformation>& clipCache,
+                   StreamDetails streamDetails)
 {
   if (const unsigned int playlistSize{GetDWord(buffer, offset)};
       buffer.size() < playlistSize + offset)
@@ -796,7 +817,7 @@ bool ParsePlaylist(const CURL& url,
     CLog::LogFC(LOGDEBUG, LOGBLURAY, "Playlist duration {}", fmt::format("{:%H:%M:%S}", duration));
 
     // Process clips
-    if (!ProcessClips(url, playlistInformation, clipCache))
+    if (!ProcessClips(url, playlistInformation, clipCache, streamDetails))
       return false;
   }
 
@@ -945,7 +966,8 @@ bool ParseMPLS(const CURL& url,
                std::vector<std::byte>& buffer,
                BlurayPlaylistInformation& playlistInformation,
                unsigned int playlist,
-               std::map<unsigned int, ClipInformation>& clipCache)
+               std::map<unsigned int, ClipInformation>& clipCache,
+               StreamDetails streamDetails)
 {
   // Check size
   if (buffer.size() < MPLS_HEADER_SIZE)
@@ -990,7 +1012,7 @@ bool ParseMPLS(const CURL& url,
 
   // Parse Playlist
   offset = playlistPosition;
-  if (!ParsePlaylist(url, buffer, offset, playlistInformation, clipCache))
+  if (!ParsePlaylist(url, buffer, offset, playlistInformation, clipCache, streamDetails))
     return false;
 
   // Parse PlayListMark
@@ -1040,10 +1062,13 @@ ChapterInformation::ChapterInformation(unsigned int newChapter,
 bool CMPLSParser::ReadMPLS(const CURL& url,
                            unsigned int playlist,
                            BlurayPlaylistInformation& playlistInformation,
-                           std::map<unsigned int, ClipInformation>& clipCache)
+                           std::map<unsigned int, ClipInformation>& clipCache,
+                           StreamDetails streamDetails)
 {
   try
   {
+    playlistInformation.clipStreamsRead = streamDetails == StreamDetails::INCLUDE;
+
     const std::string& path{url.GetHostName()};
     const std::string playlistFile{
         URIUtils::AddFileToFolder(path, "BDMV", "PLAYLIST", fmt::format("{:05}.mpls", playlist))};
@@ -1058,7 +1083,7 @@ bool CMPLSParser::ReadMPLS(const CURL& url,
     file.Close();
 
     if (read == size)
-      return ParseMPLS(url, buffer, playlistInformation, playlist, clipCache);
+      return ParseMPLS(url, buffer, playlistInformation, playlist, clipCache, streamDetails);
     return false;
   }
   catch (const std::out_of_range& e)
@@ -1074,6 +1099,63 @@ bool CMPLSParser::ReadMPLS(const CURL& url,
   catch (...)
   {
     CLog::LogF(LOGERROR, "MPLS parsing failed");
+    return false;
+  }
+}
+
+bool CMPLSParser::ReadClipStreams(const CURL& url,
+                                  BlurayPlaylistInformation& playlistInformation,
+                                  std::map<unsigned int, ClipInformation>& clipCache)
+{
+  try
+  {
+    for (ClipInformation& clip : playlistInformation.clips)
+    {
+      if (clip.streamsRead)
+        continue;
+
+      // Only the stream information is taken.
+      // The clip's timings were derived from the play items (see DeriveChaptersAndTimings)
+      if (const auto& it{clipCache.find(clip.clip)};
+          it != clipCache.end() && it->second.streamsRead)
+      {
+        const auto& [_, cachedClip] = *it;
+        clip.version = cachedClip.version;
+        clip.programs = cachedClip.programs;
+        clip.streamsRead = true;
+        continue;
+      }
+
+      ClipInformation clipInformation;
+      if (!ReadCLPI(url, clip.clip, clipInformation))
+      {
+        CLog::LogFC(LOGDEBUG, LOGBLURAY, "Cannot read clip {} information", clip.clip);
+        return false;
+      }
+      clipCache[clip.clip] = clipInformation;
+
+      clip.version = std::move(clipInformation.version);
+      clip.programs = std::move(clipInformation.programs);
+      clip.streamsRead = true;
+    }
+
+    playlistInformation.clipStreamsRead = true;
+
+    return true;
+  }
+  catch (const std::out_of_range& e)
+  {
+    CLog::LogF(LOGERROR, "CLPI parsing failed - error {}", e.what());
+    return false;
+  }
+  catch (const std::exception& e)
+  {
+    CLog::LogF(LOGERROR, "CLPI parsing failed - error {}", e.what());
+    return false;
+  }
+  catch (...)
+  {
+    CLog::LogF(LOGERROR, "CLPI parsing failed");
     return false;
   }
 }

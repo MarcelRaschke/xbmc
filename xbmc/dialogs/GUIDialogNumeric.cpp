@@ -15,8 +15,8 @@
 #include "guilib/GUIWindowManager.h"
 #include "input/actions/Action.h"
 #include "input/actions/ActionIDs.h"
-#include "input/keyboard/KeyIDs.h"
 #include "input/keyboard/XBMC_vkeys.h"
+#include "input/keymaps/keyboard/KeyIDs.h"
 #include "interfaces/AnnouncementManager.h"
 #include "messaging/helpers/DialogOKHelper.h"
 #include "resources/LocalizeStrings.h"
@@ -106,10 +106,10 @@ bool CGUIDialogNumeric::OnAction(const CAction &action)
     OnOK();
   else if (action.GetID() >= REMOTE_0 && action.GetID() <= REMOTE_9)
     OnNumber(action.GetID() - REMOTE_0);
-  else if (action.GetID() >= KEY_VKEY && action.GetID() < KEY_UNICODE)
+  else if (action.GetID() >= KEY_VKEY && action.GetID() <= KEY_VKEY_MAX)
   {
     // input from the keyboard (vkey, not ascii)
-    uint8_t b = action.GetID() & 0xFF;
+    uint16_t b = action.GetID() - KEY_VKEY;
     if (b == XBMCVK_LEFT)
       OnPrevious();
     else if (b == XBMCVK_RIGHT)

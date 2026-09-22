@@ -73,6 +73,20 @@ std::string Database::prepare(const char* format, ...)
   return result;
 }
 
+void Database::EscapeStringConversions(std::string& format)
+{
+  size_t pos = 0;
+  while ((pos = format.find('%', pos)) != std::string::npos && pos + 1 < format.size())
+  {
+    // Everything that is not "%s" is either the literal percent "%%" asks for, or some other
+    // conversion (%i, %02d, %I64 ...) whose remaining characters cannot contain a percent. Either
+    // way resuming the search past these two is enough to stay in step.
+    if (format[pos + 1] == 's')
+      format.replace(pos, 2, "%q");
+    pos += 2;
+  }
+}
+
 //************* Dataset implementation ***************
 
 Dataset::Dataset() = default;
@@ -546,6 +560,11 @@ DbErrors::DbErrors(const char* msg, ...)
   va_list vl;
   va_start(vl, msg);
   char buf[DB_BUFF_MAX] = "";
+
+  // Prevent a NULL format string from crashing vsnprintf
+  if (!msg)
+    msg = "unknown database error (NULL format)";
+
 #ifndef TARGET_POSIX
   _vsnprintf(buf, DB_BUFF_MAX - 1, msg, vl);
 #else

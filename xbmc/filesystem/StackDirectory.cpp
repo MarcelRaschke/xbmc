@@ -239,34 +239,105 @@ std::string CStackDirectory::GetParentPath(const std::string& stackPath)
   return GetBasePath(stackPath);
 }
 
+namespace
+{
+// Whether a path refers to a disc (bluray://, VIDEO_TS, BDMV, or disc image)
+bool IsDiscPart(const std::string& path)
+{
+  return URIUtils::IsBlurayPath(path) || URIUtils::IsBDFile(path) || URIUtils::IsDVDFile(path) ||
+         URIUtils::IsDiscImage(path);
+}
+
+} // unnamed namespace
+
+bool CStackDirectory::HasDiscPart(const std::string& stackPath)
+{
+  std::vector<std::string> paths;
+  if (!URIUtils::IsStack(stackPath) || !GetPaths(stackPath, paths))
+    return false;
+
+  return std::ranges::any_of(paths, IsDiscPart);
+}
+
+bool CStackDirectory::IsSameDiscStack(const std::string& stackPath,
+                                      const std::string& otherStackPath)
+{
+  std::vector<std::string> paths;
+  std::vector<std::string> otherPaths;
+  if (!URIUtils::IsStack(stackPath) || !URIUtils::IsStack(otherStackPath) ||
+      !GetPaths(stackPath, paths) || !GetPaths(otherStackPath, otherPaths) || paths.empty() ||
+      paths.size() != otherPaths.size())
+    return false;
+
+  for (size_t part{0}; part < paths.size(); ++part)
+  {
+    const std::string& path{paths[part]};
+    const std::string& otherPath{otherPaths[part]};
+
+    // A disc is compared as a disc and not as a path
+    if (IsDiscPart(path) && IsDiscPart(otherPath))
+    {
+      if (!URIUtils::CompareDiscPaths(path, otherPath))
+        return false;
+
+      // When both sides name a playlist it has to be the same one
+      if (URIUtils::IsBlurayPath(path) && URIUtils::IsBlurayPath(otherPath) &&
+          CURL(path).GetFileName() != CURL(otherPath).GetFileName())
+        return false;
+
+      continue;
+    }
+
+    // Neither is a disc
+    if (!URIUtils::PathEquals(path, otherPath, true, true))
+      return false;
+  }
+  return true;
+}
+
 std::string CStackDirectory::GetBasePath(const std::string& stackPath)
 {
-  static constexpr int MAX_ITERATIONS{5};
   std::vector<std::string> paths;
   if (!GetPaths(stackPath, paths))
     return {};
 
-  // Loop until we have found a common parent path
-  bool first{true};
-  int i = 0; // Maximum of 5 iterations
-  do
+  // First pass -  normalise disc file paths to their containing folder so that
+  // BDMV/index.bdmv  → <disc root>/
+  // VIDEO_TS.IFO     → <disc root>/
+  // plain file       → parent directory/
+  for (auto& path : paths)
+  {
+    URIUtils::RemoveSlashAtEnd(path);
+    if (URIUtils::IsBDFile(path) || URIUtils::IsDVDFile(path))
+      path = URIUtils::GetDiscBasePath(path);
+    else
+      path = URIUtils::GetParentPath(path);
+  }
+
+  static constexpr int MAX_ITERATIONS{10};
+  int i{0};
+  while (i < MAX_ITERATIONS &&
+         std::ranges::adjacent_find(paths, std::not_equal_to<>()) != paths.end())
   {
     for (auto& path : paths)
     {
-      URIUtils::RemoveSlashAtEnd(path);
-      if (first && (URIUtils::IsBDFile(path) || URIUtils::IsDVDFile(path)))
-        path = URIUtils::GetDiscBasePath(path);
-      else
+      // A path that is already a parent of every other path must not be processed
+      if (const bool isAlreadyParent{
+              std::ranges::all_of(paths, [&path](const std::string& other)
+                                  { return StringUtils::StartsWith(other, path); })};
+          !isAlreadyParent)
+      {
+        URIUtils::RemoveSlashAtEnd(path);
         path = URIUtils::GetParentPath(path);
+      }
     }
-    first = false;
     ++i;
-  } while (std::ranges::adjacent_find(paths, std::not_equal_to<>()) != paths.end() &&
-           i <= MAX_ITERATIONS);
+  }
 
-  if (i > MAX_ITERATIONS && std::ranges::adjacent_find(paths, std::not_equal_to<>()) != paths.end())
+  if (i >= MAX_ITERATIONS &&
+      std::ranges::adjacent_find(paths, std::not_equal_to<>()) != paths.end())
   {
-    CLog::LogF(LOGWARNING, "Failed to find common parent path after 5 iterations. Paths: [{}]",
+    CLog::LogF(LOGWARNING, "Failed to find common parent path after 10 iterations. Paths: [{}]",
                StringUtils::Join(paths, ", "));
     return "/";
   }

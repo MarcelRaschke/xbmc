@@ -31,6 +31,7 @@
 #include "utils/log.h"
 
 #include <algorithm>
+#include <atomic>
 #include <climits>
 #include <regex>
 #include <string>
@@ -51,13 +52,6 @@ bool ValidateVideoStackRegex(const CRegExp& regex)
   }
   return true;
 };
-
-std::vector<CRegExp> CompileRegexesFromXML(TiXmlElement* folderStacking)
-{
-  std::vector<std::string> patterns;
-  CAdvancedSettings::GetCustomRegexps(folderStacking, patterns);
-  return CompileRegexes(patterns);
-}
 
 void ParseDatabaseSettings(const TiXmlElement* element, DatabaseSettings& settings)
 {
@@ -102,15 +96,11 @@ void CAdvancedSettings::OnSettingsLoaded()
   }
   CServiceBroker::GetLogging().SetLogLevel(m_logLevel);
 
-  std::vector<AdvancedSettingsCallback> callbacks;
   {
     std::lock_guard lock{m_listCritSection};
-    callbacks.reserve(m_settingsLoadedCallbacks.size());
-    std::ranges::transform(m_settingsLoadedCallbacks, std::back_inserter(callbacks),
-                           [](const auto& pair) { return pair.second; });
+    for (const auto& [handle, callback] : m_settingsLoadedCallbacks)
+      callback();
   }
-  for (auto& callback : callbacks)
-    callback();
 }
 
 void CAdvancedSettings::OnSettingsUnloaded()
@@ -130,10 +120,11 @@ void CAdvancedSettings::OnSettingChanged(const std::shared_ptr<const CSetting>& 
 
 int CAdvancedSettings::RegisterSettingsLoadedCallback(AdvancedSettingsCallback callback)
 {
-  static int idx{0};
+  static std::atomic<int> nextHandle{0};
   std::lock_guard lock{m_listCritSection};
-  m_settingsLoadedCallbacks[idx] = callback;
-  return ++idx;
+  const int handle{nextHandle++};
+  m_settingsLoadedCallbacks.emplace(handle, std::move(callback));
+  return handle;
 }
 
 void CAdvancedSettings::UnregisterSettingsLoadedCallback(int handle)
@@ -210,6 +201,7 @@ void CAdvancedSettings::Initialize()
   m_videoAudioDelayRange = 10;
   m_videoAudioDelayStep = 0.025f;
   m_videoUseTimeSeeking = true;
+  m_videoSmoothPercentToTimeSeeking = true;
   m_videoTimeSeekForward = 30;
   m_videoTimeSeekBackward = -30;
   m_videoTimeSeekForwardBig = 600;
@@ -227,7 +219,6 @@ void CAdvancedSettings::Initialize()
   m_videoVDPAUScaling = -1;
   m_videoNonLinStretchRatio = 0.5f;
   m_videoAutoScaleMaxFps = 30.0f;
-  m_videoCaptureUseOcclusionQuery = -1; //-1 is auto detect
   m_videoVDPAUtelecine = false;
   m_videoVDPAUdeintSkipChromaHD = false;
   m_DXVACheckCompatibility = false;
@@ -263,7 +254,7 @@ void CAdvancedSettings::Initialize()
   m_fullScreenOnMovieStart = true;
   m_cachePath = "special://temp/";
 
-  m_videoFilenameIdentifierRegExp = R"([\{\[](\w+?)(?:id)?[-=](\w+)[\}|\]])";
+  m_videoFilenameAttributePairsRegExp = R"([\[{]\s*(?<key>\w+)\s*[=\-](?<value>[^\]}]+)[\]}])";
   m_videoCleanDateTimeRegExp = "(.*[^ _\\,\\.\\(\\)\\[\\]\\-])[ _\\.\\(\\)\\[\\]\\-]+(19[0-9][0-9]|20[0-9][0-9])([ _\\,\\.\\(\\)\\[\\]\\-]|[^0-9]$)?";
 
   m_videoCleanStringRegExps.clear();
@@ -310,19 +301,21 @@ void CAdvancedSettings::Initialize()
                                         m_allExcludeFromScanRegExps.begin(),
                                         m_allExcludeFromScanRegExps.end());
 
-  m_folderStackRegExps = CompileRegexes({
-      "^(.*?)[ _.-]*((?:cd|dvd|p(?:(?:ar)?t)|dis[ck])[ _.-]*[0-9])$",
+  m_folderStackStrings = {
+      "^(.+?)[ _.-]*((?:cd|dvd|p(?:(?:ar)?t)|dis[ck])[ _.-]*[0-9])$",
       "()((?:p(?:(?:ar)?t)[ _.-]*[0-9]))$",
-  });
+  };
+  m_folderStackRegExps = CompileRegexes(m_folderStackStrings);
 
-  m_videoStackRegExps = CompileRegexes({
+  m_videoStackStrings = {
       "(.*?)([ _.-]*(?:cd|dvd|p(?:(?:ar)?t)|dis[ck]|file)[ _.-]*[0-9]+)(.*?)(\\.[^.]+)$",
-      "(.*?)([ _.-]*(?:cd|dvd|p(?:(?:ar)?t)|dis[ck])[ _.-]*[a-z])(.*?)(\\.[^.]+)$",
-      "^(.+)((?:[ ._-]|(?<=\\)))[a-z])()(\\.[^.]+)$",
+      "(.*?)([ _.-]*(?:cd|dvd|p(?:(?:ar)?t)|dis[ck])[ _.-]*[a-h])(.*?)(\\.[^.]+)$",
+      "^(.+)((?:[ ._-]|(?<=\\)))[a-h])()(\\.[^.]+)$",
       // This one is a bit too greedy to enable by default.  It will stack sequels
       // in a flat dir structure, but is perfectly safe in a dir-per-vid one.
       // "(.*?)([ ._-]*[0-9])(.*?)(\\.[^.]+)$",
-  });
+  };
+  m_videoStackRegExps = CompileRegexes(m_videoStackStrings);
 
   m_tvshowEnumRegExps.clear();
   // foo.s01.e01, foo.s01_e01, S01E02 foo, S01 - E02, S01xE02
@@ -406,6 +399,7 @@ void CAdvancedSettings::Initialize()
   m_bVideoLibraryCleanOnUpdate = false;
   m_bVideoLibraryUseFastHash = true;
   m_bVideoScannerIgnoreErrors = false;
+  m_metadataSourcesPriv = "tmdb|imdb|tvdb|anidb|";
   m_iVideoLibraryDateAdded = 1; // prefer mtime over ctime and current time
   m_minimumEpisodePlaylistDuration = 5 * 60; // 5 minutes
   m_disableEpisodeRanges = false;
@@ -413,6 +407,8 @@ void CAdvancedSettings::Initialize()
   m_caseSensitiveLocalArtMatch = true; // case sensitive local art matching
   m_bNoRemoteArtWithLocalScraper =
       false; // If local nfo file refers to online art, it will be retrieved
+  m_ignoreFolderNamesInArchives =
+      true; // Whether the folder name inside an archive (if present) should be ignored when determining the movie name
 
   m_iEpgUpdateCheckInterval = 300; /* Check every X seconds, if EPG data need to be updated. This does not mean that
                                       every X seconds an EPG update is actually triggered, it's just the interval how
@@ -582,7 +578,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     return;
   }
 
-  TiXmlElement *pRootElement = advancedXML.RootElement();
+  const TiXmlElement* pRootElement = advancedXML.RootElement();
   if (!pRootElement || StringUtils::CompareNoCase(pRootElement->Value(), "advancedsettings") != 0)
   {
     CLog::Log(LOGERROR, "Error loading {}, no <advancedsettings> node", file);
@@ -625,14 +621,6 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
         passTag->LinkEndChild(new TiXmlText("*****"));
       }
     }
-    if (network->FirstChildElement("nfstimeout"))
-    {
-      XMLUtils::GetUInt(network, "nfstimeout", m_nfsTimeout, 0, 3600);
-    }
-    if (network->FirstChildElement("nfsretries"))
-    {
-      XMLUtils::GetInt(network, "nfsretries", m_nfsRetries, -1, 30);
-    }
   }
 
   // Dump contents of copied AS.xml to debug log
@@ -645,7 +633,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
   CLog::Log(LOGINFO, "Contents of {} are...\n{}", file,
             std::regex_replace(printer.CStr(), redactRe, "$1USERNAME:PASSWORD@"));
 
-  TiXmlElement *pElement = pRootElement->FirstChildElement("audio");
+  const TiXmlElement* pElement = pRootElement->FirstChildElement("audio");
   if (pElement)
   {
     XMLUtils::GetString(pElement, "defaultplayer", m_audioDefaultPlayer);
@@ -663,7 +651,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetInt(pElement, "percentseekforwardbig", m_musicPercentSeekForwardBig, 0, 100);
     XMLUtils::GetInt(pElement, "percentseekbackwardbig", m_musicPercentSeekBackwardBig, -100, 0);
 
-    TiXmlElement* pAudioExcludes = pElement->FirstChildElement("excludefromlisting");
+    const TiXmlElement* pAudioExcludes = pElement->FirstChildElement("excludefromlisting");
     if (pAudioExcludes)
       GetCustomRegexps(pAudioExcludes, m_audioExcludeFromListingRegExps);
 
@@ -705,6 +693,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetFloat(pElement, "ignorepercentatend", m_videoIgnorePercentAtEnd, 0, 100.0f);
 
     XMLUtils::GetBoolean(pElement, "usetimeseeking", m_videoUseTimeSeeking);
+    XMLUtils::GetBoolean(pElement, "smoothpercenttotimeseeking", m_videoSmoothPercentToTimeSeeking);
     XMLUtils::GetInt(pElement, "timeseekforward", m_videoTimeSeekForward, 0, 6000);
     XMLUtils::GetInt(pElement, "timeseekbackward", m_videoTimeSeekBackward, -6000, 0);
     XMLUtils::GetInt(pElement, "timeseekforwardbig", m_videoTimeSeekForwardBig, 0, 6000);
@@ -715,7 +704,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetInt(pElement, "percentseekforwardbig", m_videoPercentSeekForwardBig, 0, 100);
     XMLUtils::GetInt(pElement, "percentseekbackwardbig", m_videoPercentSeekBackwardBig, -100, 0);
 
-    TiXmlElement* pVideoExcludes = pElement->FirstChildElement("excludefromlisting");
+    const TiXmlElement* pVideoExcludes = pElement->FirstChildElement("excludefromlisting");
     if (pVideoExcludes)
       GetCustomRegexps(pVideoExcludes, m_videoExcludeFromListingRegExps);
 
@@ -731,21 +720,20 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     if (pVideoExcludes)
       GetCustomRegexps(pVideoExcludes, m_videoCleanStringRegExps);
 
-    XMLUtils::GetString(pElement, "filenameidentifier", m_videoFilenameIdentifierRegExp);
+    XMLUtils::GetString(pElement, "filenameattributepairs", m_videoFilenameAttributePairsRegExp);
     XMLUtils::GetString(pElement,"cleandatetime", m_videoCleanDateTimeRegExp);
     XMLUtils::GetString(pElement,"ppffmpegpostprocessing",m_videoPPFFmpegPostProc);
     XMLUtils::GetInt(pElement,"vdpauscaling",m_videoVDPAUScaling);
     XMLUtils::GetFloat(pElement, "nonlinearstretchratio", m_videoNonLinStretchRatio, 0.01f, 1.0f);
-    XMLUtils::GetFloat(pElement,"autoscalemaxfps",m_videoAutoScaleMaxFps, 0.0f, 1000.0f);
-    XMLUtils::GetInt(pElement, "useocclusionquery", m_videoCaptureUseOcclusionQuery, -1, 1);
+    XMLUtils::GetFloat(pElement, "autoscalemaxfps", m_videoAutoScaleMaxFps, 0.0f, 1000.0f);
     XMLUtils::GetBoolean(pElement,"vdpauInvTelecine",m_videoVDPAUtelecine);
     XMLUtils::GetBoolean(pElement,"vdpauHDdeintSkipChroma",m_videoVDPAUdeintSkipChromaHD);
     XMLUtils::GetBoolean(pElement, "bypasscodecprofile", m_videoBypassCodecProfile);
 
-    TiXmlElement* pAdjustRefreshrate = pElement->FirstChildElement("adjustrefreshrate");
+    const TiXmlElement* pAdjustRefreshrate = pElement->FirstChildElement("adjustrefreshrate");
     if (pAdjustRefreshrate)
     {
-      TiXmlElement* pRefreshOverride = pAdjustRefreshrate->FirstChildElement("override");
+      const TiXmlElement* pRefreshOverride = pAdjustRefreshrate->FirstChildElement("override");
       while (pRefreshOverride)
       {
         RefreshOverride refreshOverride = {};
@@ -799,7 +787,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
         pRefreshOverride = pRefreshOverride->NextSiblingElement("override");
       }
 
-      TiXmlElement* pRefreshFallback = pAdjustRefreshrate->FirstChildElement("fallback");
+      const TiXmlElement* pRefreshFallback = pAdjustRefreshrate->FirstChildElement("fallback");
       while (pRefreshFallback)
       {
         RefreshOverride fallback = {};
@@ -837,15 +825,15 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
 
     //0 = disable fps detect, 1 = only detect on timestamps with uniform spacing, 2 detect on all timestamps
     XMLUtils::GetInt(pElement, "fpsdetect", m_videoFpsDetect, 0, 2);
-    XMLUtils::GetFloat(pElement, "maxtempo", m_maxTempo, 1.5, 2.1);
+    XMLUtils::GetFloat(pElement, "maxtempo", m_maxTempo, 1.5, 2.0);
     XMLUtils::GetBoolean(pElement, "preferstereostream", m_videoPreferStereoStream);
 
     // Store global display latency settings
-    TiXmlElement* pVideoLatency = pElement->FirstChildElement("latency");
+    const TiXmlElement* pVideoLatency = pElement->FirstChildElement("latency");
     if (pVideoLatency)
     {
       float refresh, refreshmin, refreshmax;
-      TiXmlElement* pRefreshVideoLatency = pVideoLatency->FirstChildElement("refresh");
+      const TiXmlElement* pRefreshVideoLatency = pVideoLatency->FirstChildElement("refresh");
 
       while (pRefreshVideoLatency)
       {
@@ -896,12 +884,12 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetInt(pElement, "dateadded", m_iMusicLibraryDateAdded);
     XMLUtils::GetBoolean(pElement, "useisodates", m_bMusicLibraryUseISODates);
     XMLUtils::GetBoolean(pElement, "artistnavigatestosongs", m_bMusicLibraryArtistNavigatesToSongs);
-    //Music artist name separators
-    TiXmlElement* separators = pElement->FirstChildElement("artistseparators");
+    // Music artist name separators
+    const TiXmlElement* separators = pElement->FirstChildElement("artistseparators");
     if (separators)
     {
       m_musicArtistSeparators.clear();
-      TiXmlNode* separator = separators->FirstChild("separator");
+      const TiXmlNode* separator = separators->FirstChild("separator");
       while (separator)
       {
         if (separator->FirstChild())
@@ -926,12 +914,22 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetInt(pElement, "minimumepisodeplaylistduration", m_minimumEpisodePlaylistDuration);
     XMLUtils::GetBoolean(pElement, "disableepisoderanges", m_disableEpisodeRanges);
     XMLUtils::GetBoolean(pElement, "noremoteartwithlocalscraper", m_bNoRemoteArtWithLocalScraper);
+    XMLUtils::GetBoolean(pElement, "ignorefoldernamesinarchives", m_ignoreFolderNamesInArchives);
   }
 
   pElement = pRootElement->FirstChildElement("videoscanner");
   if (pElement)
   {
     XMLUtils::GetBoolean(pElement, "ignoreerrors", m_bVideoScannerIgnoreErrors);
+
+    // Adjust the builtin list with the advanced setting then prepare for use.
+    if (const TiXmlElement* elem = pElement->FirstChildElement("metadatasources"); elem != nullptr)
+      GetCustomExtensions(elem, m_metadataSourcesPriv);
+
+    StringUtils::ToLower(m_metadataSourcesPriv);
+    const std::vector<std::string> split = StringUtils::Split(m_metadataSourcesPriv, '|');
+    m_videoScannerMetadataSources = std::unordered_set<std::string>(
+        std::make_move_iterator(split.begin()), std::make_move_iterator(split.end()));
   }
 
   // Backward-compatibility of ExternalPlayer config
@@ -958,6 +956,8 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetBoolean(pElement, "disableipv6", m_curlDisableIPV6);
     XMLUtils::GetBoolean(pElement, "disablehttp2", m_curlDisableHTTP2);
     XMLUtils::GetString(pElement, "catrustfile", m_caTrustFile);
+    XMLUtils::GetUInt(pElement, "nfstimeout", m_nfsTimeout, 0, 3600);
+    XMLUtils::GetInt(pElement, "nfsretries", m_nfsRetries, -1, 30);
   }
 
   pElement = pRootElement->FirstChildElement("jsonrpc");
@@ -1060,7 +1060,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
   }
 
   // picture exclude regexps
-  TiXmlElement* pPictureExcludes = pRootElement->FirstChildElement("pictureexcludes");
+  const TiXmlElement* pPictureExcludes = pRootElement->FirstChildElement("pictureexcludes");
   if (pPictureExcludes)
     GetCustomRegexps(pPictureExcludes, m_pictureExcludeFromListingRegExps);
 
@@ -1094,10 +1094,10 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     m_cachePath = tmp;
   URIUtils::AddSlashAtEnd(m_cachePath);
 
-  g_LangCodeExpander.LoadUserCodes(pRootElement->FirstChildElement("languagecodes"));
+  CLangCodeExpander::LoadUserCodes(pRootElement->FirstChildElement("languagecodes"));
 
   // trailer matching regexps
-  TiXmlElement* pTrailerMatching = pRootElement->FirstChildElement("trailermatching");
+  const TiXmlElement* pTrailerMatching = pRootElement->FirstChildElement("trailermatching");
   if (pTrailerMatching)
     GetCustomRegexps(pTrailerMatching, m_trailerMatchRegExps);
 
@@ -1107,24 +1107,24 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
                                         m_trailerMatchRegExps.end());
 
   // video stacking regexps
-  TiXmlElement* videoStacking = pRootElement->FirstChildElement("moviestacking");
+  const TiXmlElement* videoStacking = pRootElement->FirstChildElement("moviestacking");
   if (videoStacking)
   {
-    std::vector<CRegExp> regexes = CompileRegexesFromXML(videoStacking);
-    std::erase_if(regexes, std::not_fn(ValidateVideoStackRegex));
-    std::ranges::move(regexes, std::back_inserter(m_videoStackRegExps));
+    GetCustomRegexps(videoStacking, m_videoStackStrings);
+    m_videoStackRegExps = CompileRegexes(m_videoStackStrings);
+    std::erase_if(m_videoStackRegExps, std::not_fn(ValidateVideoStackRegex));
   }
 
   // folder stacking regexps
-  TiXmlElement* folderStacking = pRootElement->FirstChildElement("folderstacking");
+  const TiXmlElement* folderStacking = pRootElement->FirstChildElement("folderstacking");
   if (folderStacking)
   {
-    std::vector<CRegExp> regexes = CompileRegexesFromXML(folderStacking);
-    std::ranges::move(regexes, std::back_inserter(m_folderStackRegExps));
+    GetCustomRegexps(folderStacking, m_folderStackStrings);
+    m_folderStackRegExps = CompileRegexes(m_folderStackStrings);
   }
 
   //tv stacking regexps
-  TiXmlElement* pTVStacking = pRootElement->FirstChildElement("tvshowmatching");
+  const TiXmlElement* pTVStacking = pRootElement->FirstChildElement("tvshowmatching");
   if (pTVStacking)
     GetCustomTVRegexps(pTVStacking, m_tvshowEnumRegExps);
 
@@ -1246,23 +1246,19 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     const TiXmlElement* pSortDecription = pPVR->FirstChildElement("pvrrecordings");
     if (pSortDecription)
     {
-      const char* XML_SORTMETHOD = "sortmethod";
-      const char* XML_SORTORDER = "sortorder";
-      auto sortMethod = static_cast<int>(SortBy::NONE);
       static constexpr CSet validSortMethods{SortBy::LABEL,          SortBy::DATE,
                                              SortBy::SIZE,           SortBy::FILE,
                                              SortBy::EPISODE_NUMBER, SortBy::PROVIDER};
-      XMLUtils::GetInt(pSortDecription, XML_SORTMETHOD, sortMethod, static_cast<int>(SortBy::NONE),
-                       static_cast<int>(SortBy::USER_PREFERENCE));
-      if (validSortMethods.contains(static_cast<SortBy>(sortMethod)))
+      std::string smString;
+      XMLUtils::GetString(pSortDecription, "sortmethod", smString);
+      const auto sortMethod = SortUtils::SortMethodFromString(smString);
+      if (validSortMethods.contains(sortMethod))
       {
-        int sortOrder;
-        if (XMLUtils::GetInt(pSortDecription, XML_SORTORDER, sortOrder,
-                             static_cast<int>(SortOrder::ASCENDING),
-                             static_cast<int>(SortOrder::DESCENDING)))
+        std::string soString;
+        if (XMLUtils::GetString(pSortDecription, "sortorder", soString))
         {
-          m_PVRDefaultSortOrder.sortBy = static_cast<SortBy>(sortMethod);
-          m_PVRDefaultSortOrder.sortOrder = static_cast<SortOrder>(sortOrder);
+          m_PVRDefaultSortOrder.sortBy = sortMethod;
+          m_PVRDefaultSortOrder.sortOrder = SortUtils::SortOrderFromString(soString);
         }
       }
     }
@@ -1287,11 +1283,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
       dbElement != nullptr)
     ParseDatabaseSettings(dbElement, m_databaseEpg);
 
-  pElement = pRootElement->FirstChildElement("enablemultimediakeys");
-  if (pElement)
-  {
-    XMLUtils::GetBoolean(pRootElement, "enablemultimediakeys", m_enableMultimediaKeys);
-  }
+  XMLUtils::GetBoolean(pRootElement, "enablemultimediakeys", m_enableMultimediaKeys);
 
   pElement = pRootElement->FirstChildElement("gui");
   if (pElement)
@@ -1311,9 +1303,18 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
   if (!seekSteps.empty())
   {
     m_seekSteps.clear();
-    std::vector<std::string> steps = StringUtils::Split(seekSteps, ',');
-    for (const auto& step : steps)
-      m_seekSteps.emplace_back(std::atoi(step.c_str()));
+    const auto steps = StringUtils::Split(seekSteps, ',');
+    try
+    {
+      std::ranges::transform(steps, std::back_inserter(m_seekSteps),
+                             [](const auto& step) { return std::stoi(step); });
+    }
+    catch (const std::exception& e)
+    {
+      CLog::Log(LOGERROR, R"(Error parsing seeksteps (="{}"): {}\n Clearing all values)", seekSteps,
+                e.what());
+      m_seekSteps.clear();
+    }
   }
 
   XMLUtils::GetBoolean(pRootElement, "opengldebugging", m_openGlDebugging);
@@ -1343,9 +1344,10 @@ void CAdvancedSettings::Clear()
   m_userAgent.clear();
 }
 
-void CAdvancedSettings::GetCustomTVRegexps(TiXmlElement *pRootElement, SETTINGS_TVSHOWLIST& settings)
+void CAdvancedSettings::GetCustomTVRegexps(const TiXmlElement* pRootElement,
+                                           SETTINGS_TVSHOWLIST& settings)
 {
-  TiXmlElement *pElement = pRootElement;
+  const TiXmlElement* pElement = pRootElement;
   while (pElement)
   {
     int iAction = 0; // overwrite
@@ -1365,7 +1367,7 @@ void CAdvancedSettings::GetCustomTVRegexps(TiXmlElement *pRootElement, SETTINGS_
     }
     if (iAction == 0)
       settings.clear();
-    TiXmlNode* pRegExp = pElement->FirstChild("regexp");
+    const TiXmlNode* pRegExp = pElement->FirstChild("regexp");
     int i = 0;
     while (pRegExp)
     {
@@ -1408,9 +1410,10 @@ void CAdvancedSettings::GetCustomTVRegexps(TiXmlElement *pRootElement, SETTINGS_
   }
 }
 
-void CAdvancedSettings::GetCustomRegexps(TiXmlElement *pRootElement, std::vector<std::string>& settings)
+void CAdvancedSettings::GetCustomRegexps(const TiXmlElement* pRootElement,
+                                         std::vector<std::string>& settings)
 {
-  TiXmlElement *pElement = pRootElement;
+  const TiXmlElement* pElement = pRootElement;
   while (pElement)
   {
     int iAction = 0; // overwrite
@@ -1430,7 +1433,7 @@ void CAdvancedSettings::GetCustomRegexps(TiXmlElement *pRootElement, std::vector
     }
     if (iAction == 0)
       settings.clear();
-    TiXmlNode* pRegExp = pElement->FirstChild("regexp");
+    const TiXmlNode* pRegExp = pElement->FirstChild("regexp");
     int i = 0;
     while (pRegExp)
     {

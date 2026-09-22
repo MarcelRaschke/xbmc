@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2005-2018 Team Kodi
+ *  Copyright (C) 2005-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -147,8 +147,14 @@
 /* Game related include files */
 #include "cores/RetroPlayer/guiwindows/GameWindowFullScreen.h"
 #include "games/agents/windows/GUIAgentWindow.h"
+#include "games/cheats/dialogs/DialogGameCheats.h"
 #include "games/controllers/windows/GUIControllerWindow.h"
+#include "games/dialogs/disc/DialogGameDiscManager.h"
+#include "games/dialogs/osd/DialogGameAchievements.h"
 #include "games/dialogs/osd/DialogGameAdvancedSettings.h"
+#include "games/dialogs/osd/DialogGameIndicators.h"
+#include "games/dialogs/osd/DialogGameLeaderboardEntries.h"
+#include "games/dialogs/osd/DialogGameLeaderboards.h"
 #include "games/dialogs/osd/DialogGameOSD.h"
 #include "games/dialogs/osd/DialogGameSaves.h"
 #include "games/dialogs/osd/DialogGameStretchMode.h"
@@ -162,6 +168,29 @@
 using namespace KODI;
 using namespace PVR;
 using namespace PERIPHERALS;
+
+namespace
+{
+bool PreValidateMessage(CGUIMessage& message, CGUIWindow& window)
+{
+  // Click message: check that the underlying control hasn't been disabled by core code.
+  // note: the "regular" enabled status is modified by skin conditions > use a different function.
+  if (message.GetMessage() == GUI_MSG_CLICKED && window.HasID(message.GetControlId()))
+  {
+    // @todo: if this is not enough to locate the control, maybe borrow more from SendControlMessage
+    if (CGUIControl * ctrl{window.GetControl(message.GetSenderId(), nullptr)};
+        ctrl != nullptr && ctrl->IsDisabled())
+    {
+      CLog::Log(LOGWARNING,
+                "Window manager: Blocked an attempt to click a disabled control "
+                "(control {} window {})",
+                message.GetSenderId(), message.GetControlId());
+      return false;
+    }
+  }
+  return true;
+}
+} // namespace
 
 CGUIWindowManager::CGUIWindowManager()
 {
@@ -329,6 +358,12 @@ void CGUIWindowManager::CreateWindows()
   Add(new GAME::CDialogGameVideoRotation);
   Add(new GAME::CDialogInGameSaves);
   Add(new GAME::CGUIAgentWindow);
+  Add(new GAME::CDialogGameDiscManager);
+  Add(new GAME::CDialogGameAchievements);
+  Add(new GAME::CDialogGameLeaderboards);
+  Add(new GAME::CDialogGameLeaderboardEntries);
+  Add(new GAME::CDialogGameIndicators);
+  Add(new GAME::CDialogGameCheats);
   Add(new RETRO::CGameWindowFullScreen);
 }
 
@@ -455,6 +490,12 @@ bool CGUIWindowManager::DestroyWindows()
     DestroyWindow(WINDOW_DIALOG_GAME_VIDEO_ROTATION);
     DestroyWindow(WINDOW_DIALOG_IN_GAME_SAVES);
     DestroyWindow(WINDOW_DIALOG_GAME_AGENTS);
+    DestroyWindow(WINDOW_DIALOG_GAME_DISC_MANAGER);
+    DestroyWindow(WINDOW_DIALOG_GAME_LEADERBOARDS);
+    DestroyWindow(WINDOW_DIALOG_GAME_LEADERBOARD_ENTRIES);
+    DestroyWindow(WINDOW_DIALOG_GAME_INDICATORS);
+    DestroyWindow(WINDOW_DIALOG_GAME_ACHIEVEMENTS);
+    DestroyWindow(WINDOW_DIALOG_GAME_CHEATS);
     DestroyWindow(WINDOW_FULLSCREEN_GAME);
 
     Remove(WINDOW_SETTINGS_SERVICE);
@@ -553,6 +594,10 @@ bool CGUIWindowManager::SendMessage(CGUIMessage& message)
   while (topWindow)
   {
     auto dialog = m_activeDialogs[--topWindow];
+
+    if (!PreValidateMessage(message, *dialog))
+      continue;
+
     if (!modalAcceptedMessage && dialog->IsModalDialog())
     { // modal window
       hasModalDialog = true;
@@ -573,7 +618,7 @@ bool CGUIWindowManager::SendMessage(CGUIMessage& message)
 
   // now send to the underlying window
   CGUIWindow* window = GetWindow(GetActiveWindow());
-  if (window)
+  if (window && PreValidateMessage(message, *window))
   {
     if (hasModalDialog)
     {
@@ -1571,6 +1616,11 @@ void CGUIWindowManager::DeInitialize()
   // clear our vectors of windows
   m_vecCustomWindows.clear();
   m_activeDialogs.clear();
+
+  // FrameMove is the only other drain and stops running at shutdown
+  for (const auto& window : m_deleteWindows)
+    window->FreeResources(true);
+  m_deleteWindows.clear();
 
   m_initialized = false;
 }

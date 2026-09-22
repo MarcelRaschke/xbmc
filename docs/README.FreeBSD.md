@@ -82,11 +82,14 @@ If you get a `package not found` type of message with the below command, remove 
 
 Install build dependencies:
 ```
-sudo pkg install autoconf automake avahi-app binutils cmake curl dbus doxygen e2fsprogs-libuuid enca encodings evdev-proto exiv2 ffmpeg flac flatbuffers font-util fontconfig freetype2 fribidi fstrcmp gawk gettext-tools giflib git glew gmake gmp gnutls googletest gperf gstreamer1-vaapi jpeg-turbo libaacs libass libbdplus libbluray libcapn libcdio libcec libdisplay-info libedit libfmt libgcrypt libgpg-error libidn libinotify libinput libmicrohttpd libnfs libogg libplist librtmp libtool libudev-devd libva libvdpau libvorbis libxkbcommon libxslt lirc lzo2 m4 mariadb-connector-c-3.3.8_1 mesa-libs nasm nlohmann-json openjdk21 p8-platform pcre2 pkgconf python3 shairplay sndio spdlog sqlite3 swig taglib tiff tinyxml tinyxml2 wayland-protocols waylandpp xf86-input-keyboard xf86-input-mouse xorg-server xrandr zip
+sudo pkg install autoconf automake avahi-app binutils cmake curl dbus doxygen e2fsprogs-libuuid enca encodings evdev-proto exiv2 ffmpeg flac flatbuffers font-util fontconfig freetype2 fribidi fstrcmp gawk gettext-tools giflib git glew gmake gmp gnutls googletest gperf gstreamer1-vaapi jpeg-turbo libaacs libass libbdplus libbluray libcapn libcdio libcec libdisplay-info libedit libfmt libgcrypt libgpg-error libidn libinotify libinput libmicrohttpd libnfs libogg libplist librtmp libtool libudev-devd libva libvdpau libvorbis libxkbcommon libxslt lirc lzo2 m4 mariadb-connector-c-3.3.8_1 mesa-libs nasm nlohmann-json openjdk21 pcre2 pkgconf python3 shairplay sndio spdlog sqlite3 swig taglib tiff tinyxml tinyxml2 wayland-protocols waylandpp xf86-input-keyboard xf86-input-mouse xorg-server xrandr zip
 ```
 
 > [!WARNING]  
 > Make sure you copy paste the entire line or you might receive an error or miss a few dependencies.
+
+> [!NOTE]  
+> The Python bindings need SWIG 4.5.0 or newer. If your release ships an older `swig`, install `bison` and configure Kodi with `-DENABLE_INTERNAL_SWIG=ON` to build the pinned version as part of the Kodi build.
 
 > [!NOTE]  
 > For developers and anyone else who builds frequently it is recommended to install `ccache` to expedite subsequent builds of Kodi.

@@ -163,6 +163,15 @@ public:
   void GetSettingsFromMapping(CPeripheral& peripheral) const;
 
   /*!
+   * @brief Get the default values defined in the mappings file for a peripheral, without
+   * applying them to it.
+   * @param peripheral The peripheral to get the defaults for.
+   * @return The default value of each setting, keyed by setting id.
+   */
+  std::map<std::string, std::string> GetDefaultSettingsFromMapping(
+      const CPeripheral& peripheral) const;
+
+  /*!
    * @brief Trigger a device scan on all known busses
    */
   void TriggerDeviceScan(const PeripheralBusType type = PERIPHERAL_BUS_UNKNOWN);
@@ -217,6 +226,23 @@ public:
   bool ToggleDeviceState(const CecStateChange mode = STATE_SWITCH_TOGGLE);
 
   /*!
+   * @brief Query the power status of the device attached via HDMI-CEC.
+   * @param adapterName The name of the CEC adapter to query, matched case insensitively against
+   * the adapter's device name and against its location, so unnamed adapters can be addressed by
+   * port. When empty, the first adapter that reports a status is queried.
+   * @return The reported power status, or CecPowerStatus::NO_ADAPTER when no CEC adapter is
+   * present, when no adapter matches the name, or when the matching adapter isn't running.
+   */
+  CecPowerStatus GetDevicePowerStatus(const std::string& adapterName = "");
+
+  /*!
+   * @brief Get the names of the CEC adapters that are present.
+   * @return The name of each adapter, or its location when the bus didn't name it. These are the
+   * names that GetDevicePowerStatus() matches against.
+   */
+  std::vector<std::string> GetCecAdapterNames() const;
+
+  /*!
    * @brief Try to mute the audio via a peripheral.
    * @return True when this change was handled by a peripheral (and should not be handled by
    * anything else), false otherwise.
@@ -235,14 +261,6 @@ public:
   {
     return ToggleMute();
   } //! @todo CEC only supports toggling the mute status at this time
-
-  /*!
-   * @brief Try to get a keypress from a peripheral.
-   * @param frameTime The current frametime.
-   * @param key The fetched key.
-   * @return True when a keypress was fetched, false otherwise.
-   */
-  bool GetNextKeypress(float frameTime, CKey& key);
 
   /*!
    * @brief Register with the event scanner to control scan timing
@@ -374,6 +392,8 @@ public:
 
 private:
   bool LoadMappings();
+  static bool MappingMatchesPeripheral(const PeripheralDeviceMapping& mapping,
+                                       const CPeripheral& peripheral);
   bool GetMappingForDevice(const CPeripheralBus& bus, PeripheralScanResult& result) const;
   static void GetSettingsFromMappingsFile(
       tinyxml2::XMLElement* xmlNode, std::map<std::string, PeripheralDeviceSetting>& m_settings);

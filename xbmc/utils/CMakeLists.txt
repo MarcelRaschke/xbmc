@@ -21,6 +21,7 @@ set(SOURCES ActorProtocol.cpp
             DiscsUtils.cpp
             EndianSwap.cpp
             EmbeddedArt.cpp
+            EpisodeUtils.cpp
             ExecString.cpp
             FileExtensionProvider.cpp
             Fanart.cpp
@@ -29,6 +30,7 @@ set(SOURCES ActorProtocol.cpp
             FontUtils.cpp
             GpuInfo.cpp
             GroupUtils.cpp
+            HDRUtils.cpp
             HevcSei.cpp
             HTMLUtil.cpp
             HttpHeader.cpp
@@ -40,6 +42,7 @@ set(SOURCES ActorProtocol.cpp
             JSONVariantWriter.cpp
             LabelFormatter.cpp
             LangCodeExpander.cpp
+            LanguageTag.cpp
             LegacyPathTranslation.cpp
             Locale.cpp
             log.cpp
@@ -103,6 +106,7 @@ set(HEADERS ActorProtocol.h
             Digest.h
             DiscsUtils.h
             EndianSwap.h
+            EpisodeUtils.h
             EventStream.h
             EventStreamDetail.h
             ExecString.h
@@ -116,6 +120,7 @@ set(HEADERS ActorProtocol.h
             GpuInfo.h
             GroupUtils.h
             HDRCapabilities.h
+            HDRUtils.h
             HevcSei.h
             HTMLUtil.h
             HttpHeader.h
@@ -136,6 +141,7 @@ set(HEADERS ActorProtocol.h
             JSONVariantWriter.h
             LabelFormatter.h
             LangCodeExpander.h
+            LanguageTag.h
             LegacyPathTranslation.h
             Locale.h
             LockInfo.h

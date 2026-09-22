@@ -10,19 +10,20 @@
 
 /* to use the same as player */
 #include "../VideoPlayer/DVDClock.h"
-#include "RenderCapture.h"
 #include "RenderFactory.h"
 #include "RenderFlags.h"
 #include "ServiceBroker.h"
 #include "application/Application.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "messaging/ApplicationMessenger.h"
+#include "rendering/capture/CaptureBlit.h"
+#include "rendering/capture/CaptureMetadata.h"
+#include "rendering/capture/CaptureService.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "threads/SingleLock.h"
 #include "utils/StringUtils.h"
-#include "utils/XTimeUtils.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
@@ -39,8 +40,6 @@ void CRenderManager::CClockSync::Reset()
   m_syncOffset = 0;
   m_enabled = false;
 }
-
-unsigned int CRenderManager::m_nextCaptureId = 0;
 
 CRenderManager::CRenderManager(CDVDClock &clock, IRenderMsg *player) :
   m_dvdClock(clock),
@@ -97,10 +96,21 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     if (!m_bRenderGUI)
       return true;
 
-    if (m_picture.IsSameParams(picture) && m_fps == fps && m_orientation == orientation &&
-        m_NumberBuffers == buffers && m_pRenderer != nullptr &&
-        !m_pRenderer->ConfigChanged(picture))
+    if (m_pRenderer != nullptr && m_picture.IsSameParams(picture) && m_orientation == orientation &&
+        m_NumberBuffers == buffers && !m_pRenderer->ConfigChanged(picture))
     {
+      if (m_fps != fps)
+      {
+        CLog::Log(LOGDEBUG, "CRenderManager::Configure - framerate changed from {:4.2f} to {:4.2f}",
+                  m_fps, fps);
+        m_fps = fps;
+        m_pRenderer->SetFps(fps);
+        m_bTriggerUpdateResolution = true;
+        // Clear stale vsync/late-frame state from the old framerate; CheckEnableClockSync() will recalibrate on the next FrameMove on the main thread.
+        m_clockSync.Reset();
+        m_dvdClock.SetVsyncAdjust(0);
+        m_lateframes = -1;
+      }
       return true;
     }
   }
@@ -204,7 +214,7 @@ bool CRenderManager::Configure()
 
     m_playerPort->UpdateRenderInfo(info);
     m_playerPort->UpdateGuiRender(true);
-    m_playerPort->UpdateVideoRender(!m_pRenderer->IsGuiLayer());
+    m_playerPort->UpdateVideoRender(m_pRenderer->VideoBypassesFramebuffer());
 
     m_queued.clear();
     m_discard.clear();
@@ -220,7 +230,7 @@ bool CRenderManager::Configure()
     m_presentpts = DVD_NOPTS_VALUE;
     m_lateframes = -1;
     m_presentevent.notifyAll();
-    m_renderedOverlay = false;
+    m_renderedDebugOverlay = false;
     m_renderDebug = false;
     m_clockSync.Reset();
     m_dvdClock.SetVsyncAdjust(0);
@@ -339,9 +349,13 @@ void CRenderManager::FrameMove()
     m_bRenderGUI = true;
   }
 
-  m_playerPort->UpdateGuiRender(IsGuiLayer() || firstFrame);
+  m_playerPort->UpdateGuiRender(IsGuiLayer() || !m_pRenderer->VideoBypassesFramebuffer() ||
+                                firstFrame);
 
-  ManageCaptures();
+  // Run libass for the current PTS and cache the output for ConvertLibass
+  // to use during the render pass. PrepareOverlays MarkDirty's on libass
+  // changes and on PGS/DVB/SPU arrival/disappearance.
+  m_overlays.PrepareOverlays(m_presentsource);
 }
 
 void CRenderManager::PreInit()
@@ -396,12 +410,12 @@ void CRenderManager::UnInit()
   m_overlays.UnInit();
   m_debugRenderer.Dispose();
 
+  m_captureBlit.reset();
   DeleteRenderer();
 
   m_renderState = STATE_UNCONFIGURED;
   m_picture.Reset();
   m_bRenderGUI = false;
-  RemoveCaptures();
 
   m_initEvent.Set();
 }
@@ -497,179 +511,74 @@ void CRenderManager::DeleteRenderer()
   }
 }
 
-unsigned int CRenderManager::AllocRenderCapture()
+void CRenderManager::ServiceVideoCaptures()
 {
-  if (m_pRenderer)
+  using namespace KODI::RENDERING::CAPTURE;
+
+  const auto captureService = CServiceBroker::GetCaptureService();
+  if (!captureService)
+    return;
+
+  const auto requests = captureService->TakeActive(CaptureContent::VIDEO);
+  if (requests.empty())
+    return;
+
+  // the renderer does not draw video into the framebuffer, so the copy-back
+  // below would capture the GUI (if any) instead of the video; fail the request
+  if (m_pRenderer->VideoBypassesFramebuffer())
   {
-    CRenderCapture* capture = m_pRenderer->GetRenderCapture();
-    if (capture)
+    for (const auto& request : requests)
     {
-      m_captures[m_nextCaptureId] = capture;
-      return m_nextCaptureId++;
+      CaptureResult result;
+      if (m_pRenderer->CaptureVideoFrame(request->spec, result))
+        captureService->Complete(request, std::move(result));
+      else
+        captureService->Fail(request);
     }
-  }
-
-  return m_nextCaptureId;
-}
-
-void CRenderManager::ReleaseRenderCapture(unsigned int captureId)
-{
-  std::unique_lock lock(m_captCritSect);
-
-  std::map<unsigned int, CRenderCapture*>::iterator it;
-  it = m_captures.find(captureId);
-
-  if (it != m_captures.end())
-    it->second->SetState(CAPTURESTATE_NEEDSDELETE);
-}
-
-void CRenderManager::StartRenderCapture(unsigned int captureId, unsigned int width, unsigned int height, int flags)
-{
-  std::unique_lock lock(m_captCritSect);
-
-  std::map<unsigned int, CRenderCapture*>::iterator it;
-  it = m_captures.find(captureId);
-  if (it == m_captures.end())
-  {
-    CLog::Log(LOGERROR, "CRenderManager::Capture - unknown capture id: {}", captureId);
     return;
   }
 
-  CRenderCapture *capture = it->second;
+  CRect src;
+  CRect dst;
+  CRect view;
+  m_pRenderer->GetVideoRect(src, dst, view);
 
-  capture->SetState(CAPTURESTATE_NEEDSRENDER);
-  capture->SetUserState(CAPTURESTATE_WORKING);
-  capture->SetWidth(width);
-  capture->SetHeight(height);
-  capture->SetFlags(flags);
-  capture->GetEvent().Reset();
+  // zoom modes push destRect past the output; the copy is clamped to the
+  // visible region, so native-size targets must be sized from it too
+  const CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  CRect visible{dst};
+  visible.Intersect(
+      CRect(0.0f, 0.0f, static_cast<float>(gfx.GetWidth()), static_cast<float>(gfx.GetHeight())));
 
-  if (CServiceBroker::GetAppMessenger()->IsProcessThread())
+  if (!m_captureBlit)
+    m_captureBlit = std::make_unique<CCaptureBlit>();
+
+  for (const auto& request : requests)
   {
-    if (flags & CAPTUREFLAG_IMMEDIATELY)
+    const unsigned int width =
+        request->spec.width ? request->spec.width : static_cast<unsigned int>(visible.Width());
+    const unsigned int height =
+        request->spec.height ? request->spec.height : static_cast<unsigned int>(visible.Height());
+
+    CaptureResult result;
+    if (m_captureBlit->Blit(visible, width, height, request->spec.format) &&
+        m_captureBlit->Read(result))
     {
-      //render capture and read out immediately
-      RenderCapture(capture);
-      capture->SetUserState(capture->GetState());
-      capture->GetEvent().Set();
-    }
-  }
-
-  if (!m_captures.empty())
-    m_hasCaptures = true;
-}
-
-bool CRenderManager::RenderCaptureGetPixels(unsigned int captureId, unsigned int millis, uint8_t *buffer, unsigned int size)
-{
-  std::unique_lock lock(m_captCritSect);
-
-  std::map<unsigned int, CRenderCapture*>::iterator it;
-  it = m_captures.find(captureId);
-  if (it == m_captures.end())
-    return false;
-
-  m_captureWaitCounter++;
-
-  {
-    if (!millis)
-      millis = 1000;
-
-    CSingleExit exitlock(m_captCritSect);
-    if (!it->second->GetEvent().Wait(std::chrono::milliseconds(millis)))
-    {
-      m_captureWaitCounter--;
-      return false;
-    }
-  }
-
-  m_captureWaitCounter--;
-
-  if (it->second->GetUserState() != CAPTURESTATE_DONE)
-    return false;
-
-  unsigned int srcSize = it->second->GetWidth() * it->second->GetHeight() * 4;
-  unsigned int bytes = std::min(srcSize, size);
-
-  memcpy(buffer, it->second->GetPixels(), bytes);
-  return true;
-}
-
-void CRenderManager::ManageCaptures()
-{
-  //no captures, return here so we don't do an unnecessary lock
-  if (!m_hasCaptures)
-    return;
-
-  std::unique_lock lock(m_captCritSect);
-
-  std::map<unsigned int, CRenderCapture*>::iterator it = m_captures.begin();
-  while (it != m_captures.end())
-  {
-    CRenderCapture* capture = it->second;
-
-    if (capture->GetState() == CAPTURESTATE_NEEDSDELETE)
-    {
-      delete capture;
-      it = m_captures.erase(it);
-      continue;
-    }
-
-    if (capture->GetState() == CAPTURESTATE_NEEDSRENDER)
-      RenderCapture(capture);
-    else if (capture->GetState() == CAPTURESTATE_NEEDSREADOUT)
-      capture->ReadOut();
-
-    if (capture->GetState() == CAPTURESTATE_DONE || capture->GetState() == CAPTURESTATE_FAILED)
-    {
-      //tell the thread that the capture is done or has failed
-      capture->SetUserState(capture->GetState());
-      capture->GetEvent().Set();
-
-      if (capture->GetFlags() & CAPTUREFLAG_CONTINUOUS)
-      {
-        capture->SetState(CAPTURESTATE_NEEDSRENDER);
-
-        //if rendering this capture continuously, and readout is async, render a new capture immediately
-        if (capture->IsAsync() && !(capture->GetFlags() & CAPTUREFLAG_IMMEDIATELY))
-          RenderCapture(capture);
-      }
-      ++it;
+      result.color = GetOutputColorMetadata(*CServiceBroker::GetWinSystem());
+      // the presented PQ is the content's during passthrough, so carry its
+      // mastering metadata verbatim: the source peak an SDR tonemap needs.
+      // NOTE: m_picture, not m_pConfigPicture, which Configure() has already
+      // reset by the time this frame reaches CONFIGURED.
+      result.hasDisplayMetadata = m_picture.hasDisplayMetadata;
+      result.displayMetadata = m_picture.displayMetadata;
+      result.hasLightMetadata = m_picture.hasLightMetadata;
+      result.lightMetadata = m_picture.lightMetadata;
+      result.content = CaptureContent::VIDEO; // this tap delivers video-only
+      captureService->Complete(request, std::move(result));
     }
     else
-    {
-      ++it;
-    }
+      captureService->Fail(request);
   }
-
-  if (m_captures.empty())
-    m_hasCaptures = false;
-}
-
-void CRenderManager::RenderCapture(CRenderCapture* capture)
-{
-  if (!m_pRenderer || !m_pRenderer->RenderCapture(m_presentsource, capture))
-    capture->SetState(CAPTURESTATE_FAILED);
-}
-
-void CRenderManager::RemoveCaptures()
-{
-  std::unique_lock lock(m_captCritSect);
-
-  while (m_captureWaitCounter > 0)
-  {
-    for (auto entry : m_captures)
-    {
-      entry.second->GetEvent().Set();
-    }
-    CSingleExit lockexit(m_captCritSect);
-    KODI::TIME::Sleep(10ms);
-  }
-
-  for (auto entry : m_captures)
-  {
-    delete entry.second;
-  }
-  m_captures.clear();
 }
 
 void CRenderManager::SetViewMode(int iViewMode)
@@ -708,6 +617,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   if (!gui && m_pRenderer->IsGuiLayer())
     return;
 
+  bool presented = false;
   if (!gui || m_pRenderer->IsGuiLayer())
   {
     SPresent& m = m_Queue[m_presentsource];
@@ -718,6 +628,20 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       PresentBlend(clear, flags, alpha);
     else
       PresentSingle(clear, flags, alpha);
+
+    presented = true;
+  }
+
+  // the just-presented region is video-only: OSD, GUI and subtitles come later
+  if (presented)
+    ServiceVideoCaptures();
+
+  if (presented && !gui)
+  {
+    CRect src, dst, view;
+    m_pRenderer->GetVideoRect(src, dst, view);
+    m_overlays.SetVideoRect(src, dst, view);
+    m_overlays.RenderHDROverlays(m_presentsource);
   }
 
   if (gui)
@@ -725,7 +649,6 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     if (!m_pRenderer->IsGuiLayer())
       m_pRenderer->Update();
 
-    m_renderedOverlay = m_overlays.HasOverlay(m_presentsource);
     CRect src, dst, view;
     m_pRenderer->GetVideoRect(src, dst, view);
     m_overlays.SetVideoRect(src, dst, view);
@@ -763,7 +686,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       m_debugRenderer.Render(src, dst, view);
 
       m_debugTimer.Set(1000ms);
-      m_renderedOverlay = true;
+      m_renderedDebugOverlay = true;
     }
   }
 
@@ -800,25 +723,11 @@ bool CRenderManager::IsGuiLayer()
     if (!m_pRenderer)
       return false;
 
-    if ((m_pRenderer->IsGuiLayer() && IsPresenting()) ||
-        m_renderedOverlay || m_overlays.HasOverlay(m_presentsource))
+    if ((m_pRenderer->IsGuiLayer() && IsPresenting()) || m_renderedDebugOverlay ||
+        m_overlays.HasVisibleOverlay(m_presentsource))
       return true;
 
     if (m_renderDebug && m_debugTimer.IsTimePast())
-      return true;
-  }
-  return false;
-}
-
-bool CRenderManager::IsVideoLayer()
-{
-  {
-    std::unique_lock lock(m_statelock);
-
-    if (!m_pRenderer)
-      return false;
-
-    if (!m_pRenderer->IsGuiLayer())
       return true;
   }
   return false;
@@ -1137,10 +1046,10 @@ void CRenderManager::PrepareNextRender()
   if (!m_showVideo && !m_forceNext)
     return;
 
-  double frameOnScreen = m_dvdClock.GetClock();
-  double frametime = 1.0 /
-                     static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) *
-                     DVD_TIME_BASE;
+  const double frameOnScreen = m_dvdClock.GetClock();
+  const double frametime =
+      1.0 / static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) *
+      DVD_TIME_BASE;
 
   m_displayLatency = DVD_MSEC_TO_TIME(
       m_latencyTweak +
@@ -1148,11 +1057,13 @@ void CRenderManager::PrepareNextRender()
       m_videoDelay -
       static_cast<double>(CServiceBroker::GetWinSystem()->GetFrameLatencyAdjustment()));
 
-  double renderPts = frameOnScreen + m_displayLatency;
+  const bool isPaused = m_dvdClock.IsPaused();
+  double renderPts = frameOnScreen;
+  if (!isPaused)
+    renderPts += m_displayLatency;
 
-  double nextFramePts = m_Queue[m_queued.front()].pts;
-  if (m_dvdClock.GetClockSpeed() < 0)
-    nextFramePts = renderPts;
+  const double nextFramePts =
+      m_dvdClock.GetClockSpeed() < 0 ? renderPts : m_Queue[m_queued.front()].pts;
 
   if (m_clockSync.m_enabled)
   {
@@ -1161,14 +1072,15 @@ void CRenderManager::PrepareNextRender()
     m_clockSync.m_errCount ++;
     if (m_clockSync.m_errCount > 30)
     {
-      double average = m_clockSync.m_error / m_clockSync.m_errCount;
+      const double average = m_clockSync.m_error / m_clockSync.m_errCount;
       m_clockSync.m_syncOffset = average;
       m_clockSync.m_error = 0;
       m_clockSync.m_errCount = 0;
 
       m_dvdClock.SetVsyncAdjust(-average);
     }
-    renderPts += frametime / 2 - m_clockSync.m_syncOffset;
+    if (!isPaused)
+      renderPts += frametime / 2 - m_clockSync.m_syncOffset;
   }
   else
   {
@@ -1220,8 +1132,8 @@ void CRenderManager::PrepareNextRender()
       m_queued.pop_front();
     }
 
-    int lateframes = static_cast<int>((renderPts - m_Queue[idx].pts) *
-                                      static_cast<double>(m_fps / DVD_TIME_BASE));
+    const int lateframes = static_cast<int>((renderPts - m_Queue[idx].pts) *
+                                            static_cast<double>(m_fps / DVD_TIME_BASE));
     if (lateframes)
       m_lateframes += lateframes;
     else

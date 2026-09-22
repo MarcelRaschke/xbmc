@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2005-2018 Team Kodi
+ *  Copyright (C) 2005-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -10,6 +10,8 @@
 
 #include "MediaSource.h" // Definition of std::vector<CMediaSource>
 #include "utils/Digest.h"
+#include "utils/LanguageTag.h"
+#include "utils/RegExp.h"
 
 #include <cstdint>
 #include <span>
@@ -35,13 +37,14 @@ class CURL;
 struct ExternalStreamInfo
 {
   std::string name;
-  std::string language;
+  KODI::UTILS::CLanguageTag language;
   unsigned int flag = 0;
 };
 
 class CUtil
 {
   CUtil() = delete;
+
 public:
   static void CleanString(const std::string& strFileName,
                           std::string& strTitle,
@@ -49,14 +52,7 @@ public:
                           std::string& strYear,
                           bool bRemoveExtension = false,
                           bool bCleanChars = true);
-  static bool GetFilenameIdentifier(const std::string& fileName,
-                                    std::string& identifierType,
-                                    std::string& identifier);
-  static bool GetFilenameIdentifier(const std::string& fileName,
-                                    std::string& identifierType,
-                                    std::string& identifier,
-                                    std::string& match);
-  static bool HasFilenameIdentifier(const std::string& fileName);
+
   static std::string GetTitleFromPath(const CURL& url, bool bIsFolder = false);
   static std::string GetTitleFromPath(const std::string& strFileNameAndPath, bool bIsFolder = false);
 
@@ -84,7 +80,9 @@ public:
   static void RunShortcut(const char* szPath);
   static std::string GetHomePath(
       const std::string& strTarget = "KODI_HOME"); // default target is "KODI_HOME"
-  static bool ExcludeFileOrFolder(const std::string& strFileOrFolder, const std::vector<std::string>& regexps);
+  static bool ExcludeFileOrFolder(const std::string& strFileOrFolder,
+                                  const std::vector<std::string>& regexps,
+                                  KODI::REGEXP::RegExpCache* cache);
   static void GetFileAndProtocol(const std::string& strURL, std::string& strDir);
   static int GetDVDIfoTitle(const std::string& strPathFile);
 

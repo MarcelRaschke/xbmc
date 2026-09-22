@@ -37,13 +37,11 @@ public:
               ShaderParameterMap shaderParameters,
               std::vector<std::shared_ptr<IShaderLut>> luts,
               unsigned int frameCountMod = 0) override;
-  void Render(IShaderTexture& source, IShaderTexture& target) override;
-  void SetSizes(const float2& prevSize,
-                const float2& prevTextureSize,
-                const float2& nextSize) override;
-  void PrepareParameters(const RETRO::ViewportCoordinates& dest,
-                         const float2 fullDestSize,
-                         IShaderTexture& sourceTexture,
+  void Render(IShaderTexture& sourceTexture, IShaderTexture& targetTexture) override;
+  void SetSizes(const float2& nextSize,
+                const float2& prevSize = float2{},
+                const float2& prevTextureSize = float2{}) override;
+  bool PrepareParameters(IShaderTexture& sourceTexture,
                          const std::vector<std::unique_ptr<IShaderTexture>>& pShaderTextures,
                          const std::vector<std::unique_ptr<IShader>>& pShaders,
                          uint64_t frameCount) override;
@@ -77,6 +75,9 @@ public:
    */
   bool CreateInputBuffer();
 
+protected:
+  virtual bool UpdateInputBuffer(uint64_t frameCount);
+
 private:
   struct cbInput
   {
@@ -87,7 +88,6 @@ private:
     float frame_direction;
   };
 
-  void UpdateInputBuffer(uint64_t frameCount);
   cbInput GetInputData(uint64_t frameCount = 0) const;
   void SetShaderParameters(const CD3DTexture& sourceTexture);
 
@@ -128,7 +128,7 @@ private:
   unsigned int m_frameCountMod{0};
 
   // Holds the data bound to the input cbuffer (cbInput here)
-  ID3D11Buffer* m_pInputBuffer{nullptr};
+  Microsoft::WRL::ComPtr<ID3D11Buffer> m_pInputBuffer;
 
   // Sampler state
   //ID3D11SamplerState* m_pSampler{nullptr};

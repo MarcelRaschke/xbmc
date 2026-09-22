@@ -16,6 +16,7 @@
 #include "rendering/dx/RenderSystemDX.h"
 #include "utils/log.h"
 
+#include <cstddef>
 #include <regex>
 
 using namespace KODI::SHADER;
@@ -84,13 +85,20 @@ bool CShaderPresetDX::CreateLayouts()
   for (std::unique_ptr<IShader>& videoShader : m_pShaders)
   {
     auto* videoShaderDX = static_cast<CShaderDX*>(videoShader.get());
-    videoShaderDX->CreateVertexBuffer(4, sizeof(CUSTOMVERTEX));
+    if (!videoShaderDX->CreateVertexBuffer(4, sizeof(CUSTOMVERTEX)))
+    {
+      CLog::Log(LOGERROR, "CShaderPresetDX::CreateLayouts: Failed to create shader vertex buffers");
+      return false;
+    }
 
     // Create input layout
     D3D11_INPUT_ELEMENT_DESC layout[] = {
-        {"SV_POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
-        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
-        {"TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0}};
+        {"SV_POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(CUSTOMVERTEX, x),
+         D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(CUSTOMVERTEX, tu),
+         D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(CUSTOMVERTEX, tu2),
+         D3D11_INPUT_PER_VERTEX_DATA, 0}};
 
     if (!videoShaderDX->CreateInputLayout(layout, ARRAYSIZE(layout)))
     {
@@ -109,7 +117,12 @@ bool CShaderPresetDX::CreateBuffers()
   for (std::unique_ptr<IShader>& videoShader : m_pShaders)
   {
     auto* videoShaderDX = static_cast<CShaderDX*>(videoShader.get());
-    videoShaderDX->CreateInputBuffer();
+    if (!videoShaderDX->CreateInputBuffer())
+    {
+      CLog::Log(LOGERROR,
+                "CShaderPresetDX::CreateBuffers: Failed to create shader constant buffer");
+      return false;
+    }
   }
 
   return true;
@@ -118,6 +131,8 @@ bool CShaderPresetDX::CreateBuffers()
 bool CShaderPresetDX::CreateShaderTextures()
 {
   DisposeShaderTextures();
+
+  m_bTexturesNeedSizeUpdate = false;
 
   float2 prevSize = m_videoSize;
   float2 prevTextureSize = m_videoSize;
@@ -131,6 +146,24 @@ bool CShaderPresetDX::CreateShaderTextures()
     float2 scaledSize;
     float2 textureSize;
     CalculateScaledSize(pass, prevSize, scaledSize);
+
+    //! @todo Enable usage of optimal texture sizes once multi-pass preset
+    // geometry and LUT rendering are fixed.
+    //
+    // Current issues:
+    //   - Enabling optimal texture sizes breaks geometry for many multi-pass
+    //     presets
+    //   - LUTs render incorrectly due to missing per-pass and per-LUT
+    //     TexCoord attributes.
+    //
+    // Planned solution:
+    //   - Implement additional TexCoord attributes for each pass and LUT,
+    //     setting coordinates to `xamt` and `yamt` instead of 1
+    //
+    // Reference implementation in RetroArch:
+    //   https://github.com/libretro/RetroArch/blob/09a59edd6b415b7bd124b03bda68ccc4d60b0ea8/gfx/drivers/gl2.c#L3018
+    //
+    textureSize = scaledSize; // CShaderUtils::GetOptimalTextureSize(scaledSize)
 
     if (shaderIdx + 1 == numPasses)
     {
@@ -155,24 +188,6 @@ bool CShaderPresetDX::CreateShaderTextures()
           textureFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
       }
 
-      //! @todo Enable usage of optimal texture sizes once multi-pass preset
-      // geometry and LUT rendering are fixed.
-      //
-      // Current issues:
-      //   - Enabling optimal texture sizes breaks geometry for many multi-pass
-      //     presets
-      //   - LUTs render incorrectly due to missing per-pass and per-LUT
-      //     TexCoord attributes.
-      //
-      // Planned solution:
-      //   - Implement additional TexCoord attributes for each pass and LUT,
-      //     setting coordinates to `xamt` and `yamt` instead of 1
-      //
-      // Reference implementation in RetroArch:
-      //   https://github.com/libretro/RetroArch/blob/09a59edd6b415b7bd124b03bda68ccc4d60b0ea8/gfx/drivers/gl2.c#L3018
-      //
-      textureSize = scaledSize; // CShaderUtils::GetOptimalTextureSize(scaledSize)
-
       auto textureDX = std::make_shared<CD3DTexture>();
 
       if (!textureDX->Create(static_cast<UINT>(textureSize.x), static_cast<UINT>(textureSize.y), 1,
@@ -188,8 +203,8 @@ bool CShaderPresetDX::CreateShaderTextures()
       m_pShaderTextures.emplace_back(std::make_unique<CShaderTextureDX>(std::move(textureDX)));
     }
 
-    // Notify shader of its source and dest size
-    m_pShaders[shaderIdx]->SetSizes(prevSize, prevTextureSize, scaledSize);
+    // Notify shader of its target and source sizes
+    m_pShaders[shaderIdx]->SetSizes(scaledSize, prevSize, prevTextureSize);
 
     prevSize = scaledSize;
     prevTextureSize = textureSize;
@@ -216,21 +231,29 @@ bool CShaderPresetDX::CreateSamplers()
   memcpy(sampDesc.BorderColor, &blackBorder, 4 * sizeof(FLOAT));
 
   ID3D11Device1* pDevice = DX::DeviceResources::Get()->GetD3DDevice();
-  if (FAILED(pDevice->CreateSamplerState(&sampDesc, &m_pSampNearest)))
+  if (FAILED(pDevice->CreateSamplerState(&sampDesc, m_pSampNearest.ReleaseAndGetAddressOf())))
     return false;
 
   D3D11_SAMPLER_DESC sampDescLinear = sampDesc;
   sampDescLinear.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-  if (FAILED(pDevice->CreateSamplerState(&sampDescLinear, &m_pSampLinear)))
+  if (FAILED(pDevice->CreateSamplerState(&sampDescLinear, m_pSampLinear.ReleaseAndGetAddressOf())))
     return false;
 
   return true;
 }
 
-void CShaderPresetDX::RenderShader(IShader& shader, IShaderTexture& source, IShaderTexture& target)
+void CShaderPresetDX::RenderShader(IShader& shader,
+                                   IShaderTexture& sourceTexture,
+                                   IShaderTexture& targetTexture)
 {
-  const CRect newViewPort(0.f, 0.f, target.GetWidth(), target.GetHeight());
+  const CRect newViewPort(0.f, 0.f, targetTexture.GetWidth(), targetTexture.GetHeight());
   m_context.SetViewPort(newViewPort);
   m_context.SetScissors(newViewPort);
-  shader.Render(source, target);
+
+  auto& targetDX = static_cast<CShaderTextureDX&>(targetTexture);
+  const FLOAT clearColor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  DX::DeviceResources::Get()->GetD3DContext()->ClearRenderTargetView(
+      targetDX.GetTexture().GetRenderTarget(), clearColor);
+
+  shader.Render(sourceTexture, targetTexture);
 }

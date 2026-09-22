@@ -9,15 +9,16 @@
 #include "RenderBufferPoolOpenGLES.h"
 
 #include "RenderBufferOpenGLES.h"
-#include "cores/RetroPlayer/rendering/RenderContext.h"
 #include "cores/RetroPlayer/rendering/RenderVideoSettings.h"
 #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererOpenGLES.h"
+#include "rendering/GLExtensions.h"
 #include "utils/GLUtils.h"
 
 using namespace KODI;
 using namespace RETRO;
 
-CRenderBufferPoolOpenGLES::CRenderBufferPoolOpenGLES(CRenderContext& context) : m_context(context)
+CRenderBufferPoolOpenGLES::CRenderBufferPoolOpenGLES(bool supportsTextureSwizzle)
+  : m_supportsTextureSwizzle(supportsTextureSwizzle)
 {
 }
 
@@ -28,33 +29,41 @@ bool CRenderBufferPoolOpenGLES::IsCompatible(const CRenderVideoSettings& renderS
 
 IRenderBuffer* CRenderBufferPoolOpenGLES::CreateRenderBuffer(void* header /* = nullptr */)
 {
-  return new CRenderBufferOpenGLES(m_context, m_pixeltype, m_internalformat, m_pixelformat, m_bpp);
+  return new CRenderBufferOpenGLES(m_pixelType, m_internalFormat, m_pixelFormat, m_bpp,
+                                   m_supportsTextureSwizzle);
 }
 
 bool CRenderBufferPoolOpenGLES::ConfigureInternal()
 {
+  // Configure CRenderBufferPoolOpenGLES
   switch (m_format)
   {
     case AV_PIX_FMT_0RGB32:
     {
-      m_pixeltype = GL_UNSIGNED_BYTE;
-      if (m_context.IsExtSupported("GL_EXT_texture_format_BGRA8888") ||
-          m_context.IsExtSupported("GL_IMG_texture_format_BGRA8888"))
+      m_pixelType = GL_UNSIGNED_BYTE;
+      if (m_supportsTextureSwizzle)
       {
-        m_internalformat = GL_BGRA_EXT;
-        m_pixelformat = GL_BGRA_EXT;
+        // Use core RGBA storage; advertised BGRA support can still sample black.
+        m_internalFormat = GL_RGBA;
+        m_pixelFormat = GL_RGBA;
       }
-      else if (m_context.IsExtSupported("GL_APPLE_texture_format_BGRA8888"))
+      else if (CGLExtensions::IsExtensionSupported(CGLExtensions::EXT_texture_format_BGRA8888) ||
+               CGLExtensions::IsExtensionSupported(CGLExtensions::IMG_texture_format_BGRA8888))
+      {
+        m_internalFormat = GL_BGRA_EXT;
+        m_pixelFormat = GL_BGRA_EXT;
+      }
+      else if (CGLExtensions::IsExtensionSupported(CGLExtensions::APPLE_texture_format_BGRA8888))
       {
         // Apple's implementation does not conform to spec. Instead, they require
         // differing format/internalformat, more like GL.
-        m_internalformat = GL_RGBA;
-        m_pixelformat = GL_BGRA_EXT;
+        m_internalFormat = GL_RGBA;
+        m_pixelFormat = GL_BGRA_EXT;
       }
       else
       {
-        m_internalformat = GL_RGBA;
-        m_pixelformat = GL_RGBA;
+        m_internalFormat = GL_RGBA;
+        m_pixelFormat = GL_RGBA;
       }
       m_bpp = sizeof(uint32_t);
       return true;
@@ -62,9 +71,9 @@ bool CRenderBufferPoolOpenGLES::ConfigureInternal()
     case AV_PIX_FMT_RGB555:
     case AV_PIX_FMT_RGB565:
     {
-      m_pixeltype = GL_UNSIGNED_SHORT_5_6_5;
-      m_internalformat = GL_RGB;
-      m_pixelformat = GL_RGB;
+      m_pixelType = GL_UNSIGNED_SHORT_5_6_5;
+      m_internalFormat = GL_RGB;
+      m_pixelFormat = GL_RGB;
       m_bpp = sizeof(uint16_t);
       return true;
     }

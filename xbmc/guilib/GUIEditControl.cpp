@@ -17,8 +17,8 @@
 #include "dialogs/GUIDialogNumeric.h"
 #include "input/actions/Action.h"
 #include "input/actions/ActionIDs.h"
-#include "input/keyboard/KeyIDs.h"
 #include "input/keyboard/XBMC_vkeys.h"
+#include "input/keymaps/keyboard/KeyIDs.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
 #include "utils/CharsetConverter.h"
@@ -170,10 +170,10 @@ bool CGUIEditControl::OnAction(const CAction &action)
       OnPasteClipboard();
       return true;
     }
-    else if (action.GetID() >= KEY_VKEY && action.GetID() < KEY_UNICODE && m_edit.empty())
+    else if (action.GetID() >= KEY_VKEY && action.GetID() <= KEY_VKEY_MAX && m_edit.empty())
     {
       // input from the keyboard (vkey, not ascii)
-      unsigned char b = action.GetID() & 0xFF;
+      uint16_t b = action.GetID() - KEY_VKEY;
       if (b == XBMCVK_HOME)
       {
         m_cursorPos = 0;

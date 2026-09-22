@@ -9,9 +9,11 @@
 #pragma once
 
 #include "VideoLayerBridge.h"
+#include "drm/DRMObject.h"
 #include "drm/DRMUtils.h"
 #include "threads/CriticalSection.h"
 #include "threads/SystemClock.h"
+#include "utils/DisplayInfo.h"
 #include "windowing/WinSystem.h"
 
 #include "platform/linux/input/LibInputHandler.h"
@@ -39,7 +41,7 @@ public:
   CWinSystemGbm();
   ~CWinSystemGbm() override;
 
-  const std::string GetName() override { return "gbm"; }
+  const std::string GetName() override;
 
   bool InitWindowSystem() override;
   bool DestroyWindowSystem() override;
@@ -59,10 +61,16 @@ public:
   void Register(IDispResource* resource) override;
   void Unregister(IDispResource* resource) override;
 
+  bool SetVideoOutput(const VideoPicture* videoPicture) override;
+
+  void SetColorimetry(const VideoPicture* videoPicture) override;
+  KODI::UTILS::Colorimetry GetColorimetry() const override { return m_colorimetry; }
+  KODI::UTILS::Eotf GetEotf() const override { return m_eotf; }
   bool SetHDR(const VideoPicture* videoPicture) override;
   bool IsHDRDisplay() override;
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
 
+  // holding the returned reference defers video plane teardown until it is released
   std::shared_ptr<CVideoLayerBridge> GetVideoLayerBridge() const { return m_videoLayerBridge; }
   void RegisterVideoLayerBridge(std::shared_ptr<CVideoLayerBridge> bridge)
   {
@@ -91,7 +99,9 @@ protected:
   std::unique_ptr<CLibInputHandler> m_libinput;
 
 private:
-  uint32_t m_hdr_blob_id = 0;
+  CDRMPropertyBlob m_hdrBlob;
+  KODI::UTILS::Eotf m_eotf = KODI::UTILS::Eotf::TRADITIONAL_SDR;
+  KODI::UTILS::Colorimetry m_colorimetry = KODI::UTILS::Colorimetry::DEFAULT;
 
   std::unique_ptr<UTILS::CDisplayInfo> m_info;
 };

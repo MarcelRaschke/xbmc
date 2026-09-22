@@ -11,11 +11,13 @@
 #include "ServiceBroker.h"
 #include "Util.h"
 #include "application/ApplicationComponents.h"
+#include "application/ApplicationPlayer.h"
 #include "application/ApplicationPowerHandling.h"
 #include "dialogs/GUIDialogKaiToast.h"
 #include "dialogs/GUIDialogNumeric.h"
 #include "filesystem/Directory.h"
 #include "guilib/GUIComponent.h"
+#include "guilib/GUIControlGroupList.h"
 #include "guilib/GUIWindowManager.h"
 #include "guilib/StereoscopicsManager.h"
 #include "input/WindowTranslator.h"
@@ -35,10 +37,70 @@
 #include "utils/log.h"
 #include "windows/GUIMediaWindow.h"
 
+#include <charconv>
+
 using namespace KODI;
 
 namespace
 {
+/*! \brief Reset a grouplist control's focus to its first item.
+ *  \param params The parameters.
+ *  \details params[0] = The control ID of the grouplist to reset.
+ *  \return 1 if focus was reset, 0 otherwise.
+ */
+static int ResetGroupList(const std::vector<std::string>& params)
+{
+  CGUIComponent* gui = CServiceBroker::GetGUI();
+  if (gui == nullptr)
+  {
+    CLog::Log(LOGWARNING, "ResetGroupList: No GUI present");
+    return 0;
+  }
+
+  CGUIWindow* window =
+      gui->GetWindowManager().GetWindow(gui->GetWindowManager().GetActiveWindowOrDialog());
+  if (window == nullptr)
+  {
+    CLog::Log(LOGWARNING, "ResetGroupList: No active window or dialog found");
+    return 0;
+  }
+
+  int controlId = 0;
+  const auto& param = params[0];
+  const auto end = param.data() + param.size();
+  const auto [ptr, ec] = std::from_chars(param.data(), end, controlId);
+  if (ec != std::errc{} || ptr != end)
+  {
+    CLog::Log(LOGWARNING, "ResetGroupList: control ID '{}' is not numeric.", params[0]);
+    return 0;
+  }
+
+  CGUIControl* control = window->GetControl(controlId);
+  if (control == nullptr)
+  {
+    CLog::Log(LOGWARNING, "ResetGroupList: Control {} not found", params[0]);
+    return 0;
+  }
+
+  auto groupList = dynamic_cast<CGUIControlGroupList*>(control);
+  if (control->GetControlType() != CGUIControl::GUICONTROL_GROUPLIST || groupList == nullptr)
+  {
+    CLog::Log(LOGWARNING, "ResetGroupList: Control {} is not a grouplist", params[0]);
+    return 0;
+  }
+
+  if (!groupList->ResetFocusToFirstItem())
+  {
+    CLog::Log(
+        LOGWARNING,
+        "ResetGroupList: Unable to reset grouplist {} - no visible and focusable controls found",
+        params[0]);
+    return 0;
+  }
+
+  return 1;
+}
+
 /*! \brief Execute a GUI action.
  *  \param params The parameters.
  *  \details params[0] = Action to execute.
@@ -306,40 +368,59 @@ static int RefreshRSS(const std::vector<std::string>& params)
 /*! \brief Take a screenshot.
  *  \param params The parameters.
  *  \details params[0] = URL to save file to. Blank to use default.
- *           params[1] = "sync" to run synchronously (optional).
+ *           Any parameter may be "video" for a video-only screenshot.
  */
 static int Screenshot(const std::vector<std::string>& params)
 {
-  if (!params.empty())
+  std::string strSaveToPath;
+  bool video = false;
+  for (const std::string& param : params)
   {
-    // get the parameters
-    std::string strSaveToPath = params[0];
-    bool sync = false;
-    if (params.size() >= 2)
-      sync = StringUtils::EqualsNoCase(params[1], "sync");
+    if (StringUtils::EqualsNoCase(param, "sync"))
+      CLog::Log(LOGERROR, "TakeScreenshot: the 'sync' parameter was removed; "
+                          "the screenshot is written asynchronously");
+    else if (StringUtils::EqualsNoCase(param, "video"))
+      video = true;
+    else if (strSaveToPath.empty())
+      strSaveToPath = param;
+  }
 
-    if (!strSaveToPath.empty())
+  const auto content = video ? KODI::RENDERING::CAPTURE::CaptureContent::VIDEO
+                             : KODI::RENDERING::CAPTURE::CaptureContent::COMPOSITE;
+
+  if (video)
+  {
+    // a video-only capture has nothing to read when no video is rendering
+    const auto& components = CServiceBroker::GetAppComponents();
+    const auto appPlayer = components.GetComponent<CApplicationPlayer>();
+    if (!appPlayer->IsRenderingVideo())
     {
-      if (XFILE::CDirectory::Exists(strSaveToPath))
-      {
-        std::string file = CUtil::GetNextFilename(
-            URIUtils::AddFileToFolder(strSaveToPath, "screenshot{:05}.png"), 65535);
-
-        if (!file.empty())
-        {
-          CScreenShot::TakeScreenshot(file, sync);
-        }
-        else
-        {
-          CLog::Log(LOGWARNING, "Too many screen shots or invalid folder {}", strSaveToPath);
-        }
-      }
-      else
-        CScreenShot::TakeScreenshot(strSaveToPath, sync);
+      CLog::Log(LOGWARNING, "TakeScreenshot(video) with no video rendering");
+      return 0;
     }
   }
+
+  if (!strSaveToPath.empty())
+  {
+    if (XFILE::CDirectory::Exists(strSaveToPath))
+    {
+      std::string file = CUtil::GetNextFilename(
+          URIUtils::AddFileToFolder(strSaveToPath, "screenshot{:05}.png"), 65535);
+
+      if (!file.empty())
+      {
+        CScreenShot::TakeScreenshot(file, content);
+      }
+      else
+      {
+        CLog::Log(LOGWARNING, "Too many screen shots or invalid folder {}", strSaveToPath);
+      }
+    }
+    else
+      CScreenShot::TakeScreenshot(strSaveToPath, content);
+  }
   else
-    CScreenShot::TakeScreenshot();
+    CScreenShot::TakeScreenshot(content);
 
   return 0;
 }
@@ -570,20 +651,29 @@ static int ToggleDirty(const std::vector<std::string>&)
 ///     @param[in] ident                 Stereo mode identifier.
 ///   }
 ///   \table_row2_l{
-///     <b>`TakeScreenshot(url[\,sync)`</b>
+///     <b>`TakeScreenshot(url[\,video])`</b>
 ///     ,
 ///     Takes a Screenshot
 ///     @param[in] url                   URL to save file to. Blank to use default.
-///     @param[in] sync                  Add "sync" to run synchronously (optional).
+///     @param[in] video                 Add "video" to capture the video frame only\,
+///     without GUI\, OSD or subtitles (optional).
 ///   }
 ///   \table_row2_l{
 ///     <b>`ToggleDirtyRegionVisualization`</b>
 ///     ,
 ///     makes dirty regions visible for debugging proposes.
 ///   }
+///   \table_row2_l{
+///     <b>`Control.ResetGroupList(id)`</b>
+///     ,
+///     Resets a grouplist control's focus to its first item and scrolls back to the top.
+///     @param[in] id                    The control ID of the grouplist to reset.
+///     \skinning_v22
+///   }
 ///  \table_end
 ///
 
+// clang-format off
 CBuiltins::CommandMap CGUIBuiltins::GetOperations() const
 {
   return {
@@ -602,6 +692,8 @@ CBuiltins::CommandMap CGUIBuiltins::GetOperations() const
            {"setproperty",                    {"Sets a window property for the current focused window/dialog (key,value)", 2, SetProperty}},
            {"setstereomode",                  {"Changes the stereo mode of the GUI. Params can be: toggle, next, previous, select, tomono or any of the supported stereomodes (off, split_vertical, split_horizontal, row_interleaved, hardware_based, anaglyph_cyan_red, anaglyph_green_magenta, anaglyph_yellow_blue, monoscopic)", 1, SetStereoMode}},
            {"takescreenshot",                 {"Takes a Screenshot", 0, Screenshot}},
-           {"toggledirtyregionvisualization", {"Enables/disables dirty-region visualization", 0, ToggleDirty}}
+           {"toggledirtyregionvisualization", {"Enables/disables dirty-region visualization", 0, ToggleDirty}},
+           {"control.resetgrouplist",         {"Resets a grouplist control's focus to its first item", 1, ResetGroupList}},
          };
 }
+// clang-format on

@@ -20,6 +20,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -127,20 +128,28 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
 
     /*!
      * \brief Register a callback to receive notifications when the advanced settings are loaded.
-     *        Note: the callback functions are invoked on the thread that loads the settings.
+     * 
      * \param[in] callback
      * \return opaque callback handle
+     * 
+     * \note The callback functions are invoked on the thread that loads the settings.
+     *       Callbacks should perform only fast non-blocking work to avoid holding up the execution
+     *       of other callbacks.
+     *       A callback must not acquire locks that may be held while registering or unregistering.
      */
     int RegisterSettingsLoadedCallback(AdvancedSettingsCallback callback);
 
     /*!
      * \brief Unregister a callback for notifications of advanced settings load.
-     * \param[in] handle of the callback
+     *        Note: unregistering a callback from callback context is not allowed and will cause
+     *              problems.
+     * \param[in] handle callback handle
      */
     void UnregisterSettingsLoadedCallback(int handle);
 
-    static void GetCustomTVRegexps(TiXmlElement *pRootElement, SETTINGS_TVSHOWLIST& settings);
-    static void GetCustomRegexps(TiXmlElement *pRootElement, std::vector<std::string> &settings);
+    static void GetCustomTVRegexps(const TiXmlElement* pRootElement, SETTINGS_TVSHOWLIST& settings);
+    static void GetCustomRegexps(const TiXmlElement* pRootElement,
+                                 std::vector<std::string>& settings);
     static void GetCustomExtensions(const TiXmlElement* pRootElement, std::string& extensions);
 
     std::string m_audioDefaultPlayer;
@@ -155,6 +164,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     float m_videoAudioDelayRange;
     float m_videoAudioDelayStep;
     bool m_videoUseTimeSeeking;
+    bool m_videoSmoothPercentToTimeSeeking;
     int m_videoTimeSeekForward;
     int m_videoTimeSeekBackward;
     int m_videoTimeSeekForwardBig;
@@ -190,7 +200,6 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     std::vector<RefreshVideoLatency> m_videoRefreshLatency;
     float m_videoDefaultLatency;
     float m_videoDefaultHdrExtraLatency;
-    int  m_videoCaptureUseOcclusionQuery;
     bool m_DXVACheckCompatibility;
     bool m_DXVACheckCompatibilityPresent;
     int  m_videoFpsDetect;
@@ -229,7 +238,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     bool m_fullScreenOnMovieStart;
     std::string m_cachePath;
     std::string m_videoCleanDateTimeRegExp;
-    std::string m_videoFilenameIdentifierRegExp;
+    std::string m_videoFilenameAttributePairsRegExp;
     std::vector<std::string> m_videoCleanStringRegExps;
     std::vector<std::string> m_videoExcludeFromListingRegExps;
     std::vector<std::string> m_allExcludeFromScanRegExps;
@@ -293,11 +302,13 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
 
     bool m_bVideoScannerIgnoreErrors;
     int m_iVideoLibraryDateAdded;
+    std::unordered_set<std::string> m_videoScannerMetadataSources;
 
     bool m_caseSensitiveLocalArtMatch{true};
     int m_minimumEpisodePlaylistDuration; // seconds
     bool m_disableEpisodeRanges{false};
     bool m_bNoRemoteArtWithLocalScraper{false};
+    bool m_ignoreFolderNamesInArchives{true};
 
     CLangInfo::Tokens m_vecTokens;
 
@@ -423,6 +434,10 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     void Clear();
     void SetExtraArtwork(const TiXmlElement* arttypes, std::vector<std::string>& artworkMap) const;
 
+    std::vector<std::string> m_videoStackStrings;
+    std::vector<std::string> m_folderStackStrings;
+
     mutable CCriticalSection m_listCritSection;
     std::map<int, AdvancedSettingsCallback> m_settingsLoadedCallbacks;
+    std::string m_metadataSourcesPriv;
 };

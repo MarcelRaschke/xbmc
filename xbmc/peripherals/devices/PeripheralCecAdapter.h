@@ -31,6 +31,7 @@ public:
   {
     return false;
   }
+  CecPowerStatus GetDevicePowerStatus(void) { return CecPowerStatus::NO_ADAPTER; }
 
   int GetButton(void) { return 0; }
   unsigned int GetHoldTime(void) { return 0; }
@@ -42,6 +43,7 @@ public:
 
 #include "PeripheralHID.h"
 #include "XBDateTime.h"
+#include "input/cec/ICecInputProvider.h"
 #include "interfaces/AnnouncementManager.h"
 #include "threads/CriticalSection.h"
 #include "threads/Thread.h"
@@ -63,6 +65,11 @@ namespace CEC
 class ICECAdapter;
 };
 
+namespace KODI::CEC
+{
+class ICecKeyHandler;
+} // namespace KODI::CEC
+
 namespace PERIPHERALS
 {
 class CPeripheralCecAdapterUpdateThread;
@@ -83,6 +90,7 @@ typedef enum
 } CecVolumeChange;
 
 class CPeripheralCecAdapter : public CPeripheralHID,
+                              public KODI::CEC::ICecInputProvider,
                               public ANNOUNCEMENT::IAnnouncer,
                               private CThread
 {
@@ -116,10 +124,14 @@ public:
   unsigned int GetHoldTime(void);
   void ResetButton(void);
 
+  // Implementation of ICecInputProvider
+  std::optional<CKey> GetCecKey() override;
+
   // public CEC methods
   void ActivateSource(void);
   void StandbyDevices(void);
   bool ToggleDeviceState(CecStateChange mode = STATE_SWITCH_TOGGLE, bool forceType = false);
+  CecPowerStatus GetDevicePowerStatus(void);
 
 private:
   bool InitialiseFeature(const PeripheralFeature feature) override;
@@ -149,7 +161,24 @@ private:
   void PushCecKeypress(const CecButtonPress& key);
   void GetNextKey(void);
 
-  void SetAudioSystemConnected(bool bSetTo);
+  /*!
+   * @brief Move volume control to a device on the bus, or back to Kodi.
+   * @param address The device that handles volume and mute, CECDEVICE_UNKNOWN for Kodi's own mixer.
+   *
+   * Unmutes Kodi and sets its volume to maximum when a device takes over, so that all attenuation
+   * happens in one place. Does nothing when control is already where it is asked to be.
+   */
+  void SetVolumeTarget(CEC::cec_logical_address address);
+  CEC::cec_logical_address GetVolumeTarget(void);
+  void SetTvVolumeTarget(CEC::cec_logical_address address);
+  CEC::cec_logical_address GetTvVolumeTarget(void);
+  /*!
+   * @brief Move volume control between the amp and whatever handles it in the amp's absence.
+   * @param bSetTo True to let the amp handle volume and mute, false to hand them to the TV, or to
+   *               Kodi when the TV is not expected to act on them.
+   */
+  void SetAmpControlsVolume(bool bSetTo);
+  void SetAmpMuted(bool bSetTo);
   void SetMenuLanguage(const char* strLanguage);
   void OnTvStandby(void);
 
@@ -169,7 +198,12 @@ private:
   bool m_bStarted;
   bool m_bHasButton;
   bool m_bIsReady;
-  bool m_bHasConnectedAudioSystem;
+  /* device that receives volume and mute commands, or CECDEVICE_UNKNOWN when Kodi's own mixer
+     handles them */
+  CEC::cec_logical_address m_volumeTarget;
+  /* CECDEVICE_TV while the TV is expected to act on volume commands, so that it can take over
+     whenever no amp handles them. CECDEVICE_UNKNOWN leaves those to Kodi's own mixer */
+  CEC::cec_logical_address m_tvVolumeTarget;
   std::string m_strMenuLanguage;
   CDateTime m_standbySent;
   std::vector<CecButtonPress> m_buttonQueue;
@@ -196,7 +230,6 @@ private:
   bool m_bPowerOnScreensaver;
   bool m_bUseTVMenuLanguage;
   bool m_bSendInactiveSource;
-  bool m_bPowerOffScreensaver;
   bool m_bShutdownOnStandby;
 };
 
@@ -212,6 +245,7 @@ public:
 
 protected:
   void UpdateMenuLanguage(void);
+  void UpdateTvVolumeTarget(void);
   std::string UpdateAudioSystemStatus(void);
   bool WaitReady(void);
   bool SetInitialConfiguration(void);

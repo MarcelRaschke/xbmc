@@ -27,7 +27,6 @@ class CGameServices;
 
 namespace RETRO
 {
-class CCheevos;
 class CGUIGameMessenger;
 class CRetroPlayerInput;
 class CRPProcessInfo;
@@ -69,6 +68,10 @@ public:
   void Render(bool clear, uint32_t alpha = 255, bool gui = true) override;
   bool IsRenderingVideo() const override;
   bool HasGameAgent() const override;
+  bool SupportsDiscControl() const override;
+  bool IsDiscEjected() const override;
+  std::string DiscLabel() const override;
+  bool IsTrayEmpty() const override;
 
   // Implementation of IGameCallback
   std::string GameClientID() const override;
@@ -133,7 +136,6 @@ private:
   std::unique_ptr<IPlayback> m_playback;
   std::unique_ptr<IPlaybackControl> m_playbackControl;
   std::unique_ptr<CRetroPlayerAutoSave> m_autoSave;
-  std::shared_ptr<CCheevos> m_cheevos;
 
   // Game parameters
   GAME::GameClientPtr m_gameClient;

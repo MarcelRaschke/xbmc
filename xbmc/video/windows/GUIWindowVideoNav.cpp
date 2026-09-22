@@ -76,10 +76,13 @@ using namespace KODI::MESSAGING;
 
 #define CONTROL_UPDATE_LIBRARY    20
 
+constexpr char PROPERTY_WATCHED_MODE[] = "watchedmode";
+
 CGUIWindowVideoNav::CGUIWindowVideoNav(void)
     : CGUIWindowVideoBase(WINDOW_VIDEO_NAV, "MyVideoNav.xml")
 {
   m_thumbLoader.SetObserver(this);
+  m_watchedMode = WatchedMode::ALL;
 }
 
 CGUIWindowVideoNav::~CGUIWindowVideoNav(void) = default;
@@ -213,19 +216,27 @@ bool CGUIWindowVideoNav::OnMessage(CGUIMessage& message)
       }
       else if (iControl == CONTROL_BTNSHOWMODE)
       {
-        CMediaSettings::GetInstance().CycleWatchedMode(m_vecItems->GetContent());
-        CServiceBroker::GetSettingsComponent()->GetSettings()->Save();
+        CMediaSettings::CycleWatchedMode(m_watchedMode);
+        if (m_persistWatchedMode)
+        {
+          CMediaSettings::GetInstance().SetWatchedMode(m_vecItems->GetContent(), m_watchedMode);
+          CServiceBroker::GetSettingsComponent()->GetSettings()->Save();
+        }
         OnFilterItems(GetProperty("filter").asString());
         UpdateButtons();
         return true;
       }
       else if (iControl == CONTROL_BTNSHOWALL)
       {
-        if (CMediaSettings::GetInstance().GetWatchedMode(m_vecItems->GetContent()) == WatchedModeAll)
-          CMediaSettings::GetInstance().SetWatchedMode(m_vecItems->GetContent(), WatchedModeUnwatched);
+        if (m_watchedMode == WatchedMode::ALL)
+          m_watchedMode = WatchedMode::UNWATCHED;
         else
-          CMediaSettings::GetInstance().SetWatchedMode(m_vecItems->GetContent(), WatchedModeAll);
-        CServiceBroker::GetSettingsComponent()->GetSettings()->Save();
+          m_watchedMode = WatchedMode::ALL;
+        if (m_persistWatchedMode)
+        {
+          CMediaSettings::GetInstance().SetWatchedMode(m_vecItems->GetContent(), m_watchedMode);
+          CServiceBroker::GetSettingsComponent()->GetSettings()->Save();
+        }
         OnFilterItems(GetProperty("filter").asString());
         UpdateButtons();
         return true;
@@ -390,6 +401,19 @@ bool CGUIWindowVideoNav::GetDirectory(const std::string &strDirectory, CFileItem
   bool bResult = CGUIWindowVideoBase::GetDirectory(strDirectory, items);
   if (bResult)
   {
+    m_persistWatchedMode = true;
+    if (const CVariant prop = items.GetProperty(PROPERTY_WATCHED_MODE); prop.isInteger())
+    {
+      if (const auto wm = CMediaSettings::ToWatchedMode(prop.asInteger()); wm.has_value())
+      {
+        m_watchedMode = wm.value();
+        m_persistWatchedMode = false;
+      }
+    }
+
+    if (m_persistWatchedMode)
+      m_watchedMode = CMediaSettings::GetInstance().GetWatchedMode(items.GetContent());
+
     if (VIDEO::IsVideoDb(items))
     {
       XFILE::CVideoDatabaseDirectory dir;
@@ -412,7 +436,7 @@ bool CGUIWindowVideoNav::GetDirectory(const std::string &strDirectory, CFileItem
                         (itemsSize == 2 && iFlatten == 1 &&                                                // flatten if one season + specials
                          (items[firstIndex]->GetVideoInfoTag()->m_iSeason == 0 || items[firstIndex + 1]->GetVideoInfoTag()->m_iSeason == 0));
 
-        if (iFlatten > 0 && !bFlatten && (WatchedMode)CMediaSettings::GetInstance().GetWatchedMode("tvshows") == WatchedModeUnwatched)
+        if (iFlatten > 0 && !bFlatten && m_watchedMode == WatchedMode::UNWATCHED)
         {
           int count = 0;
           for(int i = 0; i < items.Size(); i++)
@@ -589,12 +613,10 @@ void CGUIWindowVideoNav::UpdateButtons()
 
   SET_CONTROL_LABEL(CONTROL_FILTER, strLabel);
 
-  int watchMode = CMediaSettings::GetInstance().GetWatchedMode(m_vecItems->GetContent());
-  SET_CONTROL_LABEL(
-      CONTROL_BTNSHOWMODE,
-      CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(16100 + watchMode));
+  SET_CONTROL_LABEL(CONTROL_BTNSHOWMODE,
+                    CMediaSettings::GetInstance().LocalizeWatchedMode(m_watchedMode));
 
-  SET_CONTROL_SELECTED(GetID(), CONTROL_BTNSHOWALL, watchMode != WatchedModeAll);
+  SET_CONTROL_SELECTED(GetID(), CONTROL_BTNSHOWALL, m_watchedMode != WatchedMode::ALL);
 
   SET_CONTROL_SELECTED(GetID(),CONTROL_BTNPARTYMODE, g_partyModeManager.IsEnabled());
 
@@ -627,63 +649,38 @@ void CGUIWindowVideoNav::DoSearch(const std::string& strSearch, CFileItemList& i
   const auto entries = std::array{
       Entry{20338,
             [&strSearch, &tempItems, this]() { m_database.GetMoviesByName(strSearch, tempItems); }},
-      Entry{20359, [&strSearch, &tempItems,
-                    this]() { m_database.GetEpisodesByName(strSearch, tempItems); }},
-      Entry{20364, [&strSearch, &tempItems,
-                    this]() { m_database.GetTvShowsByName(strSearch, tempItems); }},
-      Entry{20391, [&strSearch, &tempItems,
-                    this]() { m_database.GetMusicVideosByName(strSearch, tempItems); }},
-      Entry{558, [&strSearch, &tempItems,
-                  this]() { m_database.GetMusicVideosByAlbum(strSearch, tempItems); }},
-      Entry{20342,
-            [&strSearch, &tempItems, this]() {
-              m_database.GetMovieGenresByName(strSearch, tempItems);
-            },
-            515},
-      Entry{20343,
-            [&strSearch, &tempItems, this]() {
-              m_database.GetTvShowGenresByName(strSearch, tempItems);
-            },
-            515},
-      Entry{20389,
-            [&strSearch, &tempItems, this]() {
-              m_database.GetMusicVideoGenresByName(strSearch, tempItems);
-            },
-            515},
-      Entry{20342,
-            [&strSearch, &tempItems, this]() {
-              m_database.GetMovieActorsByName(strSearch, tempItems);
-            },
-            20337},
-      Entry{20343,
-            [&strSearch, &tempItems, this]() {
-              m_database.GetTvShowsActorsByName(strSearch, tempItems);
-            },
-            20337},
-      Entry{20389,
-            [&strSearch, &tempItems, this]() {
-              m_database.GetMusicVideoArtistsByName(strSearch, tempItems);
-            },
-            20337},
-      Entry{20342,
-            [&strSearch, &tempItems, this]() {
-              m_database.GetMovieDirectorsByName(strSearch, tempItems);
-            },
-            20339},
-      Entry{20343,
-            [&strSearch, &tempItems, this]() {
-              m_database.GetTvShowsDirectorsByName(strSearch, tempItems);
-            },
-            20339},
-      Entry{20389,
-            [&strSearch, &tempItems, this]() {
-              m_database.GetMusicVideoDirectorsByName(strSearch, tempItems);
-            },
-            20339},
-      Entry{20365, [&strSearch, &tempItems,
-                    this]() { m_database.GetEpisodesByPlot(strSearch, tempItems); }},
+      Entry{20359, [&strSearch, &tempItems, this]()
+            { m_database.GetEpisodesByName(strSearch, tempItems); }},
+      Entry{20364, [&strSearch, &tempItems, this]()
+            { m_database.GetTvShowsByName(strSearch, tempItems); }},
+      Entry{20391, [&strSearch, &tempItems, this]()
+            { m_database.GetMusicVideosByName(strSearch, tempItems); }},
+      Entry{558, [&strSearch, &tempItems, this]()
+            { m_database.GetMusicVideosByAlbum(strSearch, tempItems); }},
+      Entry{20342, [&strSearch, &tempItems, this]()
+            { m_database.GetMovieGenresByName(strSearch, tempItems); }, 515},
+      Entry{20343, [&strSearch, &tempItems, this]()
+            { m_database.GetTvShowGenresByName(strSearch, tempItems); }, 515},
+      Entry{20389, [&strSearch, &tempItems, this]()
+            { m_database.GetMusicVideoGenresByName(strSearch, tempItems); }, 515},
+      Entry{20342, [&strSearch, &tempItems, this]()
+            { m_database.GetMovieActorsByName(strSearch, tempItems); }, 20337},
+      Entry{20343, [&strSearch, &tempItems, this]()
+            { m_database.GetTvShowsActorsByName(strSearch, tempItems); }, 20337},
+      Entry{20389, [&strSearch, &tempItems, this]()
+            { m_database.GetMusicVideoArtistsByName(strSearch, tempItems); }, 20337},
+      Entry{20342, [&strSearch, &tempItems, this]()
+            { m_database.GetMovieDirectorsByName(strSearch, tempItems); }, 20339},
+      Entry{20343, [&strSearch, &tempItems, this]()
+            { m_database.GetTvShowsDirectorsByName(strSearch, tempItems); }, 20339},
+      Entry{20389, [&strSearch, &tempItems, this]()
+            { m_database.GetMusicVideoDirectorsByName(strSearch, tempItems); }, 20339},
+      Entry{20365, [&strSearch, &tempItems, this]()
+            { m_database.GetEpisodesByPlot(strSearch, tempItems); }},
       Entry{20323,
             [&strSearch, &tempItems, this]() { m_database.GetMoviesByPlot(strSearch, tempItems); }},
+      Entry{40211, [&strSearch, &tempItems, this]()
+            { m_database.GetMovieExtrasByName(strSearch, tempItems); }},
   };
 
   std::for_each(entries.begin(), entries.end(), [this, &items, &tempItems](const auto& entry) {
@@ -1112,19 +1109,17 @@ bool CGUIWindowVideoNav::ApplyWatchedFilter(CFileItemList &items)
       (PLAYLIST::IsSmartPlayList(items) || items.IsLibraryFolder()))
     node = NodeType::TITLE_TVSHOWS; // so that the check below works
 
-  int watchMode = CMediaSettings::GetInstance().GetWatchedMode(m_vecItems->GetContent());
-
   for (int i = 0; i < items.Size(); i++)
   {
     CFileItemPtr item = items.Get(i);
 
     if (item->HasVideoInfoTag() && (node == NodeType::TITLE_TVSHOWS || node == NodeType::SEASONS))
     {
-      if (watchMode == WatchedModeUnwatched)
+      if (m_watchedMode == WatchedMode::UNWATCHED)
         item->GetVideoInfoTag()->m_iEpisode = (int)item->GetProperty("unwatchedepisodes").asInteger();
-      if (watchMode == WatchedModeWatched)
+      if (m_watchedMode == WatchedMode::WATCHED)
         item->GetVideoInfoTag()->m_iEpisode = (int)item->GetProperty("watchedepisodes").asInteger();
-      if (watchMode == WatchedModeAll)
+      if (m_watchedMode == WatchedMode::ALL)
         item->GetVideoInfoTag()->m_iEpisode = (int)item->GetProperty("totalepisodes").asInteger();
       item->SetProperty("numepisodes", item->GetVideoInfoTag()->m_iEpisode);
       listchanged = true;
@@ -1132,9 +1127,11 @@ bool CGUIWindowVideoNav::ApplyWatchedFilter(CFileItemList &items)
 
     if (filterWatched)
     {
-      if(!item->IsParentFolder() && // Don't delete the go to parent folder
-         ((watchMode == WatchedModeWatched   && item->GetVideoInfoTag()->GetPlayCount() == 0) ||
-          (watchMode == WatchedModeUnwatched && item->GetVideoInfoTag()->GetPlayCount() > 0)))
+      if (!item->IsParentFolder() && // Don't delete the go to parent folder
+          ((m_watchedMode == WatchedMode::WATCHED &&
+            item->GetVideoInfoTag()->GetPlayCount() == 0) ||
+           (m_watchedMode == WatchedMode::UNWATCHED &&
+            item->GetVideoInfoTag()->GetPlayCount() > 0)))
       {
         items.Remove(i);
         i--;

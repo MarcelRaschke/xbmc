@@ -1,12 +1,19 @@
 /*
- *  Copyright (C) 2005-2018 Team Kodi
+ *  Copyright (C) 2005-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
  *  See LICENSES/README.md for more information.
  */
 
+#include "ServiceBroker.h"
 #include "Util.h"
+#include "cores/VideoPlayer/Interface/StreamInfo.h"
+#include "settings/AdvancedSettings.h"
+#include "settings/SettingsComponent.h"
+#include "utils/StringUtils.h"
+#include "utils/URIUtils.h"
+#include "video/FilenameAttributes.h"
 
 #include <gtest/gtest-param-test.h>
 #include <gtest/gtest.h>
@@ -14,6 +21,8 @@
 using ::testing::Test;
 using ::testing::ValuesIn;
 using ::testing::WithParamInterface;
+
+using namespace KODI::VIDEO;
 
 TEST(TestUtil, GetQualifiedFilename)
 {
@@ -111,13 +120,22 @@ std::ostream& operator<<(std::ostream& os, const TestUtilCleanStringData& rhs)
 
 class TestUtilCleanString : public Test, public WithParamInterface<TestUtilCleanStringData>
 {
+public:
+  static void SetUpTestSuite()
+  {
+    // Inject list of known metadata sources for reliable results
+    const std::shared_ptr<CAdvancedSettings> advancedSettings =
+        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+    ASSERT_TRUE(advancedSettings != nullptr);
+    advancedSettings->m_videoScannerMetadataSources = {"tmdb", "imdb"};
+  }
 };
 
 TEST_P(TestUtilCleanString, GetFilenameIdentifier)
 {
   std::string identifierType;
   std::string identifier;
-  CUtil::GetFilenameIdentifier(GetParam().input, identifierType, identifier);
+  CFilenameAttributes(GetParam().input, nullptr).GetIdentifier(identifierType, identifier);
   EXPECT_EQ(identifierType, GetParam().expIdentifierType);
   EXPECT_EQ(identifier, GetParam().expIdentifier);
 }
@@ -614,7 +632,16 @@ const TestBaseData Paths[] = {
     {"archive://%5c%5cServer%5cMovies%5cmovie%5cmovie.tar.gz/BDMV/index.BDMV",
      "\\\\Server\\Movies\\movie\\", "movie"},
     {"archive://%5c%5cServer%5cMovies%5cmovie%5cdisc%201%5cmovie.tar.gz/file.mkv",
-     "\\\\Server\\Movies\\movie\\disc 1\\", "file"}};
+     "\\\\Server\\Movies\\movie\\disc 1\\", "file"},
+    // HTTP URL with query string
+    {"http://192.168.1.1/movie.mkv?session=abc", "http://192.168.1.1/", "movie"},
+    {"http://192.168.1.1/path/movie.mkv?session=abc", "http://192.168.1.1/path/", "movie"},
+    // Endpoint-style URL where the query selects the media
+    {"http://192.168.1.1/stream?file=movie.mkv", "http://192.168.1.1/", "stream"},
+    {"http://192.168.1.1/dir/stream?file=movie.mkv", "http://192.168.1.1/dir/", "stream"},
+    // HTTP URL with multi-param query string
+    {"http://192.168.0.110:80/immich/album-2025/VID_20250624_114200.mp4?index=1&play",
+     "http://192.168.0.110:80/immich/album-2025/", "VID_20250624_114200"}};
 
 TEST_P(TestVideoBasePathAndFileName, GetVideoBasePathAndFileName)
 {
@@ -802,19 +829,104 @@ constexpr TestMatchingSourceData SourcesToMatch[] = {
 
 TEST_P(TestMatchingSource, GetMatchingSource)
 {
+  char dosDriveLetter{'D'};
+
+#if defined(TARGET_WINDOWS_DESKTOP)
+  // D: is often an optical drive. Use a non-optical letter so this fixture tests source matching
+  // rather than the intentional optical-source shortcut.
+  if (URIUtils::IsOnDVD("D:\\"))
+  {
+    for (char candidate = 'C'; candidate <= 'Z'; ++candidate)
+    {
+      std::string driveRoot{"C:\\"};
+      driveRoot.front() = candidate;
+      if (!URIUtils::IsOnDVD(driveRoot))
+      {
+        dosDriveLetter = candidate;
+        break;
+      }
+    }
+  }
+  ASSERT_FALSE(URIUtils::IsOnDVD(std::string{dosDriveLetter} + ":\\"));
+#endif
+
+  const auto replaceOpticalTestDrive = [dosDriveLetter](const char* value)
+  {
+    std::string path{value};
+    const std::string drive{dosDriveLetter};
+    StringUtils::Replace(path, "D:\\", drive + ":\\");
+    StringUtils::Replace(path, "D%3a", drive + "%3a");
+    StringUtils::Replace(path, "D%253a", drive + "%253a");
+    return path;
+  };
+
   // Generate sources
   std::vector<CMediaSource> sources;
   for (const auto& source : Sources)
   {
-    CMediaSource mediaSource{
-        source.name,   "",    "",  source.path, SourceType::REMOTE, KODI::UTILS::CLockInfo{}, "",
-        {source.path}, false, true};
+    const std::string sourcePath{replaceOpticalTestDrive(source.path)};
+    CMediaSource mediaSource;
+    mediaSource.strName = source.name;
+    mediaSource.strPath = sourcePath;
+    mediaSource.m_iDriveType = SourceType::REMOTE;
+    mediaSource.vecPaths = {sourcePath};
     sources.emplace_back(mediaSource);
   }
 
   bool isSourceName{false};
-  int source{CUtil::GetMatchingSource(GetParam().path, sources, isSourceName)};
+  int source{
+      CUtil::GetMatchingSource(replaceOpticalTestDrive(GetParam().path), sources, isSourceName)};
   EXPECT_EQ(source, GetParam().matchingSource);
 }
 
 INSTANTIATE_TEST_SUITE_P(GetMatchingSource, TestMatchingSource, ValuesIn(SourcesToMatch));
+
+struct TestExternalStreamData
+{
+  std::string videoPath;
+  std::string associatedFile;
+  std::string language;
+  unsigned int flag;
+};
+
+// clang-format off
+const TestExternalStreamData ExternalStreams[] = {
+    // The language is a BCP 47 tag, which uses the alpha-2 code where one exists, whichever form
+    // the filename used
+    {"/movies/BigBuckBunny.mkv", "/movies/BigBuckBunny.en.srt", "en", StreamFlags::FLAG_NONE},
+    {"/movies/BigBuckBunny.mkv", "/movies/BigBuckBunny.eng.srt", "en", StreamFlags::FLAG_NONE},
+    // A language with no ISO 639-1 code keeps its alpha-3 form
+    {"/movies/BigBuckBunny.mkv", "/movies/BigBuckBunny.ady.srt", "ady", StreamFlags::FLAG_NONE},
+    // _ stands in for the BCP 47 - subtag separator, since - separates filename tokens
+    {"/movies/BigBuckBunny.mkv", "/movies/BigBuckBunny.en_AU.srt", "en-AU", StreamFlags::FLAG_NONE},
+    {"/movies/BigBuckBunny.mkv", "/movies/BigBuckBunny.pt_BR.srt", "pt-BR", StreamFlags::FLAG_NONE},
+    // Flags, before and after the language
+    {"/movies/BigBuckBunny.mkv", "/movies/BigBuckBunny.forced.en.srt", "en", StreamFlags::FLAG_FORCED},
+    {"/movies/BigBuckBunny.mkv", "/movies/BigBuckBunny.en.forced.srt", "en", StreamFlags::FLAG_FORCED},
+    {"/movies/BigBuckBunny.mkv", "/movies/BigBuckBunny.en.default.srt", "en", StreamFlags::FLAG_DEFAULT},
+    {"/movies/BigBuckBunny.mkv", "/movies/BigBuckBunny.en.original.srt", "en", StreamFlags::FLAG_ORIGINAL},
+    {"/movies/BigBuckBunny.mkv", "/movies/BigBuckBunny.en.impaired.srt", "en", StreamFlags::FLAG_HEARING_IMPAIRED},
+    // No language in the filename
+    {"/movies/BigBuckBunny.mkv", "/movies/BigBuckBunny.srt", "", StreamFlags::FLAG_NONE},
+    // The language nearest the extension is the stream's, and anything before it is its name
+    {"/movies/BigBuckBunny.mkv", "/movies/BigBuckBunny.director.en.srt", "en", StreamFlags::FLAG_NONE},
+    {"/movies/BigBuckBunny.mkv", "/movies/BigBuckBunny.en.fr.srt", "fr", StreamFlags::FLAG_NONE},
+};
+// clang-format on
+
+class TestExternalStreamDetails : public Test, public WithParamInterface<TestExternalStreamData>
+{
+};
+
+TEST_P(TestExternalStreamDetails, GetExternalStreamDetailsFromFilename)
+{
+  const ExternalStreamInfo info =
+      CUtil::GetExternalStreamDetailsFromFilename(GetParam().videoPath, GetParam().associatedFile);
+
+  EXPECT_EQ(info.language.AsBcp47(), GetParam().language);
+  EXPECT_EQ(info.flag, GetParam().flag);
+}
+
+INSTANTIATE_TEST_SUITE_P(GetExternalStreamDetailsFromFilename,
+                         TestExternalStreamDetails,
+                         ValuesIn(ExternalStreams));

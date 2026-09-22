@@ -20,19 +20,6 @@ extern "C"
 namespace DRMPRIME
 {
 
-KODI::UTILS::Colorimetry GetColorimetry(const VideoPicture& picture)
-{
-  switch (picture.color_space)
-  {
-    case AVCOL_SPC_BT2020_CL:
-      return KODI::UTILS::Colorimetry::BT2020_CYCC;
-    case AVCOL_SPC_BT2020_NCL:
-      return KODI::UTILS::Colorimetry::BT2020_YCC;
-    default:
-      return KODI::UTILS::Colorimetry::DEFAULT;
-  }
-}
-
 std::string GetColorEncoding(const VideoPicture& picture)
 {
   switch (picture.color_space)
@@ -63,35 +50,17 @@ std::string GetColorRange(const VideoPicture& picture)
   return "YCbCr limited range";
 }
 
-KODI::UTILS::Eotf GetEOTF(const VideoPicture& picture)
-{
-  switch (picture.color_transfer)
-  {
-    case AVCOL_TRC_SMPTE2084:
-      return KODI::UTILS::Eotf::PQ;
-    case AVCOL_TRC_ARIB_STD_B67:
-    case AVCOL_TRC_BT2020_10:
-      return KODI::UTILS::Eotf::HLG;
-    default:
-      return KODI::UTILS::Eotf::TRADITIONAL_SDR;
-  }
-}
-
-const AVMasteringDisplayMetadata* GetMasteringDisplayMetadata(const VideoPicture& picture)
-{
-  return picture.hasDisplayMetadata ? &picture.displayMetadata : nullptr;
-}
-
-const AVContentLightMetadata* GetContentLightMetadata(const VideoPicture& picture)
-{
-  return picture.hasLightMetadata ? &picture.lightMetadata : nullptr;
-}
-
 } // namespace DRMPRIME
 
 CVideoBufferDRMPRIME::CVideoBufferDRMPRIME(int id) : CVideoBuffer(id)
 {
   m_pixFormat = AV_PIX_FMT_DRM_PRIME;
+}
+
+bool CVideoBufferDRMPRIME::IsValid() const
+{
+  AVDRMFrameDescriptor* descriptor = GetDescriptor();
+  return descriptor && descriptor->nb_layers;
 }
 
 CVideoBufferDRMPRIMEFFmpeg::CVideoBufferDRMPRIMEFFmpeg(IVideoBufferPool& pool, int id)
@@ -116,19 +85,13 @@ void CVideoBufferDRMPRIMEFFmpeg::Unref()
   av_frame_unref(m_pFrame);
 }
 
-bool CVideoBufferDRMPRIMEFFmpeg::IsValid() const
-{
-  AVDRMFrameDescriptor* descriptor = GetDescriptor();
-  return descriptor && descriptor->nb_layers;
-}
-
 CVideoBufferPoolDRMPRIMEFFmpeg::~CVideoBufferPoolDRMPRIMEFFmpeg()
 {
   for (auto buf : m_all)
     delete buf;
 }
 
-CVideoBuffer* CVideoBufferPoolDRMPRIMEFFmpeg::Get()
+CVideoBufferDRMPRIMEFFmpeg* CVideoBufferPoolDRMPRIMEFFmpeg::Get()
 {
   std::unique_lock lock(m_critSection);
 

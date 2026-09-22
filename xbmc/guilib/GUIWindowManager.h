@@ -50,6 +50,7 @@ class CGUIWindowManager : public KODI::MESSAGING::IMessageTarget
 {
   friend CGUIDialog;
   friend CGUIMediaWindow;
+
 public:
   CGUIWindowManager();
   ~CGUIWindowManager() override;
@@ -99,6 +100,13 @@ public:
    */
   void MarkDirty(const CRect& rect);
 
+  /*! \brief True if Process() collected any dirty regions this frame.
+   *   Callable after Process() to decide whether the render pass needs
+   *   to run; used by the dirty-driven skip in CApplication::FrameMove
+   *   (currently gated to D2P plane and HDR GUI compositing FBO contexts).
+   */
+  bool HasDirtyRegions() const { return !m_dirtyregions.empty(); }
+
   /*! \brief Rendering of the current window and any dialogs
    Render is called every frame to draw the current window and any dialogs.
    It should only be called from the application thread.
@@ -124,6 +132,14 @@ public:
    \return true if the window manager is initialized, false otherwise.
    */
   bool Initialized() const { return m_initialized; }
+
+  /*! \brief Return whether a nested render loop is currently running.
+   A modal dialog pumps the application from its own Open() loop, leaving the GUI
+   message handlers below it suspended while still holding pointers into the control
+   tree. Destroying windows or controls has to wait until the stack has unwound.
+   \return true if called from within a nested render loop, false otherwise.
+   */
+  bool IsNested() const { return m_iNested > 0; }
 
   /*! \brief Create and initialize all windows and dialogs
    */

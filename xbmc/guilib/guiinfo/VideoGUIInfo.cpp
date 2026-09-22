@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2012-2018 Team Kodi
+ *  Copyright (C) 2012-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -35,6 +35,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "settings/lib/Setting.h"
+#include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/log.h"
@@ -497,12 +498,13 @@ bool CVideoGUIInfo::GetLabel(std::string& value,
         return true;
       }
       case LISTITEM_AUDIO_CODEC:
-        value = tag->m_streamDetails.GetAudioCodec();
+        value = tag->m_streamDetails.GetAudioCodec(tag->GetDescribedAudioStreamIndex());
         return true;
       case LISTITEM_AUDIO_CHANNELS:
       {
         const auto formatted{CGUIInfoUtils::FormatAudioChannels(
-            info.GetData3(), tag->m_streamDetails.GetAudioChannels())};
+            info.GetData3(),
+            tag->m_streamDetails.GetAudioChannels(tag->GetDescribedAudioStreamIndex()))};
 
         if (formatted.has_value())
         {
@@ -512,11 +514,32 @@ bool CVideoGUIInfo::GetLabel(std::string& value,
         break;
       }
       case LISTITEM_AUDIO_LANGUAGE:
-        value = tag->m_streamDetails.GetAudioLanguage();
+        value = tag->m_streamDetails.GetAudioLanguage(tag->GetDescribedAudioStreamIndex());
         return true;
       case LISTITEM_SUBTITLE_LANGUAGE:
         value = tag->m_streamDetails.GetSubtitleLanguage();
         return true;
+      case LISTITEM_FIRST_AUDIO_LANGUAGE:
+        value = tag->m_streamDetails.GetFirstAudioLanguage();
+        return true;
+      case LISTITEM_FIRST_SUBTITLE_LANGUAGE:
+        value = tag->m_streamDetails.GetFirstSubtitleLanguage();
+        return true;
+      case LISTITEM_FIRST_AUDIO_CODEC:
+        value = tag->m_streamDetails.GetFirstAudioCodec();
+        return true;
+      case LISTITEM_FIRST_AUDIO_CHANNELS:
+      {
+        const auto formatted{CGUIInfoUtils::FormatAudioChannels(
+            info.GetData3(), tag->m_streamDetails.GetFirstAudioChannels())};
+
+        if (formatted.has_value())
+        {
+          value = formatted.value();
+          return true;
+        }
+        break;
+      }
       case LISTITEM_FILENAME:
       case LISTITEM_FILE_EXTENSION:
       case LISTITEM_FILENAME_NO_EXTENSION:
@@ -586,7 +609,18 @@ bool CVideoGUIInfo::GetLabel(std::string& value,
 
         return true;
       case LISTITEM_VIDEO_HDR_TYPE:
-        value = tag->m_streamDetails.GetVideoHdrType();
+        if (tag->m_streamDetails.GetStreamCount(CStreamDetail::VIDEO) > 1 &&
+            tag->m_streamDetails.GetVideoHdrType(2) == "dolbyvision")
+          value = "dolbyvision";
+        else
+          value = tag->m_streamDetails.GetVideoHdrType();
+        return true;
+      case LISTITEM_VIDEO_HDR_DETAIL:
+        if (tag->m_streamDetails.GetStreamCount(CStreamDetail::VIDEO) > 1 &&
+            tag->m_streamDetails.GetVideoHdrType(2) == "dolbyvision")
+          value = tag->m_streamDetails.GetVideoHdrDetail(2);
+        else
+          value = tag->m_streamDetails.GetVideoHdrDetail();
         return true;
       default:
         break;
@@ -620,9 +654,19 @@ bool CVideoGUIInfo::GetLabel(std::string& value,
       value = CServiceBroker::GetDataCacheCore().GetVideoStereoMode();
       return true;
     case VIDEOPLAYER_SUBTITLES_LANG:
-      value = m_subtitleInfo.language;
+      value = m_subtitleInfo.language.AsIso6392B();
       return true;
-      break;
+    case VIDEOPLAYER_SUBTITLE_CODEC:
+      value = m_subtitleInfo.codecName;
+      return true;
+    case VIDEOPLAYER_SUBTITLE_LANG_EX:
+    {
+      value = CGUIInfoUtils::FormatLanguage(m_subtitleInfo.language);
+      return true;
+    }
+    case VIDEOPLAYER_SUBTITLE_NAME:
+      value = m_subtitleInfo.name;
+      return true;
     case VIDEOPLAYER_COVER:
       if (m_appPlayer->IsPlayingVideo())
       {
@@ -655,6 +699,9 @@ bool CVideoGUIInfo::GetLabel(std::string& value,
       return true;
     case VIDEOPLAYER_HDR_TYPE:
       value = CStreamDetails::HdrTypeToString(m_videoInfo.hdrType);
+      return true;
+    case VIDEOPLAYER_HDR_DETAIL:
+      value = m_videoInfo.hdrDetail;
       return true;
     case VIDEOPLAYER_AUDIO_CODEC:
       value = m_audioInfo.codecName;
@@ -692,7 +739,15 @@ bool CVideoGUIInfo::GetLabel(std::string& value,
       break;
     }
     case VIDEOPLAYER_AUDIO_LANG:
-      value = m_audioInfo.language;
+      value = m_audioInfo.language.AsIso6392B();
+      return true;
+    case VIDEOPLAYER_AUDIO_LANG_EX:
+    {
+      value = CGUIInfoUtils::FormatLanguage(m_audioInfo.language);
+      return true;
+    }
+    case VIDEOPLAYER_AUDIO_NAME:
+      value = m_audioInfo.name;
       return true;
     default:
       break;
@@ -858,6 +913,10 @@ bool CVideoGUIInfo::GetBool(bool& value,
         return true;
       case LISTITEM_HASVIDEOEXTRAS:
         value = tag->HasVideoExtras();
+        return true;
+      case LISTITEM_ISDEFAULTVIDEOVERSION_NAME:
+        value = tag->m_type == MediaTypeMovie &&
+                tag->GetAssetInfo().GetId() == VIDEO_VERSION_ID_DEFAULT;
         return true;
       default:
         break;

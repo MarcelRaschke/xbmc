@@ -721,6 +721,7 @@ void CWinSystemWin32::SetMinimized(bool minimized)
 std::vector<std::string> CWinSystemWin32::GetConnectedOutputs()
 {
   std::vector<std::string> outputs;
+  outputs.emplace_back(OUTPUT_NAME_DEFAULT);
 
   for (auto& display : m_displays)
   {
@@ -1332,7 +1333,10 @@ bool CWinSystemWin32::MessagePump()
 void CWinSystemWin32::SetTogglingHDR(bool toggling)
 {
   if (toggling)
+  {
     SetTimer(m_hWnd, ID_TIMER_HDR, 6000U, nullptr);
+    ResolutionChanged();
+  }
 
   m_IsTogglingHDR = toggling;
 }

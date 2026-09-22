@@ -327,6 +327,11 @@ public:
   /// @param[in,out] Structure which contains the necessary data
   /// @return The with @ref VIDEOCODEC_RETVAL return values
   ///
+  /// @note If this returns anything other than @ref VC_PICTURE while
+  /// picture.videoBufferHandle is set, Kodi releases that buffer. An addon
+  /// that releases a buffer itself must clear videoBufferHandle before
+  /// returning.
+  ///
   virtual VIDEOCODEC_RETVAL GetPicture(VIDEOCODEC_PICTURE& picture) { return VC_ERROR; }
   //----------------------------------------------------------------------------
 
@@ -360,7 +365,10 @@ public:
   /// @param[out] picture The buffer, or unmodified if false is returned
   /// @return In case buffer allocation fails, it return false.
   ///
-  /// @note If this returns true, buffer must be freed using @ref ReleaseFrameBuffer().
+  /// @note Ownership: the buffer belongs to the addon until it is either
+  /// handed back to Kodi inside a @ref VC_PICTURE result (as
+  /// @ref VIDEOCODEC_PICTURE::videoBufferHandle) or released with
+  /// @ref ReleaseFrameBuffer(). Buffers may be held across calls.
   ///
   /// @remarks Only called from addon itself
   ///
@@ -383,6 +391,38 @@ public:
   {
     return m_instanceData->toKodi->release_frame_buffer(m_instanceData->toKodi->kodiInstance,
                                                         buffer);
+  }
+  //----------------------------------------------------------------------------
+
+  //============================================================================
+  ///
+  /// @ingroup cpp_kodi_addon_videocodec
+  /// @brief Query the platform-native buffer handle for a buffer previously
+  /// obtained via @ref GetFrameBuffer().
+  ///
+  /// Allows the addon to render directly into the underlying GPU/hardware
+  /// buffer (for example via EGLImage import of a DMA-BUF on Linux), avoiding
+  /// CPU readback and copy.
+  ///
+  /// @param[in]  videoBufferHandle The opaque handle from
+  ///             @ref VIDEOCODEC_PICTURE::videoBufferHandle.
+  /// @param[out] platformBuffer Filled in on success. The `type` field
+  ///             indicates how to interpret `handle`.
+  /// @return     true if a native handle is available, false otherwise.
+  ///             Returns false on platforms where the buffer is plain CPU
+  ///             memory or when the API is unavailable; in that case the
+  ///             addon should fall back to the @ref VIDEOCODEC_PICTURE::decodedData
+  ///             CPU pointer.
+  ///
+  /// @remarks Only called from addon itself
+  ///
+  bool GetFrameBufferPlatformHandle(KODI_HANDLE videoBufferHandle,
+                                    VIDEOCODEC_PLATFORM_BUFFER& platformBuffer)
+  {
+    if (!m_instanceData->toKodi->get_frame_buffer_platform_handle)
+      return false;
+    return m_instanceData->toKodi->get_frame_buffer_platform_handle(
+        m_instanceData->toKodi->kodiInstance, videoBufferHandle, &platformBuffer);
   }
   //----------------------------------------------------------------------------
 

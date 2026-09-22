@@ -374,21 +374,22 @@ void CGUIDialogSubtitles::Search(const std::string &search/*=""*/)
 
   std::string preferredLanguage = settings->GetString(CSettings::SETTING_LOCALE_SUBTITLELANGUAGE);
 
-  if (StringUtils::EqualsNoCase(preferredLanguage, "original"))
+  if (StringUtils::EqualsNoCase(preferredLanguage, KODI::LANGINFO::subLanguageOriginal))
   {
     AudioStreamInfo info;
-    std::string strLanguage;
 
     const auto& components = CServiceBroker::GetAppComponents();
     const auto appPlayer = components.GetComponent<CApplicationPlayer>();
     appPlayer->GetAudioStreamInfo(CURRENT_STREAM, info);
 
-    if (!g_LangCodeExpander.Lookup(info.language, strLanguage))
-      strLanguage = "Unknown";
-
-    preferredLanguage = strLanguage;
+    // Passed to the subtitle service addon as a url option: it must stay unlocalized, and must
+    // name the language alone, as addons match on names such as "English", never on qualified
+    // names such as "English (Australia)"
+    preferredLanguage = info.language.GetEnglishLanguageName();
+    if (preferredLanguage.empty())
+      preferredLanguage = "Unknown";
   }
-  else if (StringUtils::EqualsNoCase(preferredLanguage, "default"))
+  else if (StringUtils::EqualsNoCase(preferredLanguage, KODI::LANGINFO::subLanguageDefault))
     preferredLanguage = g_langInfo.GetEnglishLanguageName();
 
   url.SetOption("preferredlanguage", preferredLanguage);
@@ -607,7 +608,7 @@ void CGUIDialogSubtitles::OnDownloadComplete(const CFileItemList *items, const s
 
   // Extract the language and appropriate extension
   std::string strSubLang;
-  g_LangCodeExpander.ConvertToISO6391(language, strSubLang);
+  CLangCodeExpander::ConvertToISO6391(language, strSubLang);
 
   // Iterate over all items to transfer
   for (unsigned int i = 0; i < vecFiles.size() && i < (unsigned int) items->Size(); i++)

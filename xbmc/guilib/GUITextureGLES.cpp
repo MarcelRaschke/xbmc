@@ -36,9 +36,7 @@ CGUITextureGLES::CGUITextureGLES(
   : CGUITexture(posX, posY, width, height, texture)
 {
   m_renderSystem = dynamic_cast<CRenderSystemGLES*>(CServiceBroker::GetRenderSystem());
-  unsigned int major, minor;
-  m_renderSystem->GetRenderVersion(major, minor);
-  m_isGLES20 = major == 2;
+  m_isGLES20 = !m_renderSystem->SupportsTextureSwizzle();
 }
 
 CGUITextureGLES* CGUITextureGLES::Clone() const
@@ -58,13 +56,6 @@ void CGUITextureGLES::Begin(KODI::UTILS::COLOR::Color color)
   m_col[1] = KODI::UTILS::GL::GetChannelFromARGB(KODI::UTILS::GL::ColorChannel::G, color);
   m_col[2] = KODI::UTILS::GL::GetChannelFromARGB(KODI::UTILS::GL::ColorChannel::B, color);
   m_col[3] = KODI::UTILS::GL::GetChannelFromARGB(KODI::UTILS::GL::ColorChannel::A, color);
-
-  if (CServiceBroker::GetWinSystem()->UseLimitedColor())
-  {
-    m_col[0] = (235 - 16) * m_col[0] / 255 + 16;
-    m_col[1] = (235 - 16) * m_col[1] / 255 + 16;
-    m_col[2] = (235 - 16) * m_col[2] / 255 + 16;
-  }
 
   bool hasAlpha = m_texture.m_textures[m_currentFrame]->HasAlpha() || m_col[3] < 255;
   const bool hasBlendColor =
@@ -128,7 +119,15 @@ void CGUITextureGLES::Begin(KODI::UTILS::COLOR::Color color)
 
   if (hasAlpha)
   {
-    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE_MINUS_DST_ALPHA, GL_ONE);
+    // See CGUIFontTTFGLES::FirstBegin for rationale. SDR uses accumulator
+    // coverage alpha; HDR FBO composite uses a compensated squared-alpha
+    // blend because the FBO is color-transformed to PQ/HLG before composite,
+    // and alpha blending in non-linear space is mathematically wrong.
+    if (CServiceBroker::GetWinSystem()->IsHdrComposite())
+      glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_SRC_ALPHA,
+                          GL_ONE_MINUS_SRC_ALPHA);
+    else
+      glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE_MINUS_DST_ALPHA, GL_ONE);
     glEnable( GL_BLEND );
   }
   else
@@ -172,6 +171,7 @@ void CGUITextureGLES::End()
     glEnableVertexAttribArray(tex0Loc);
 
     glDrawElements(GL_TRIANGLES, m_packedVertices.size()*6 / 4, GL_UNSIGNED_SHORT, m_idx.data());
+    CRenderSystemBase::m_GUIElementCount++;
 
     if (m_diffuse.size())
       glDisableVertexAttribArray(tex1Loc);
@@ -354,6 +354,7 @@ void CGUITextureGLES::DrawQuad(const CRect& rect,
   }
 
   glDrawElements(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, idx);
+  CRenderSystemBase::m_GUIElementCount++;
 
   glDisableVertexAttribArray(posLoc);
   if (texture)

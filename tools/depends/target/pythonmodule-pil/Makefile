@@ -19,10 +19,6 @@ ifeq ($(OS),android)
   PILPATHLIB=$(PILPATH)/lib
   PYTHONPATH=$(PILPATH):$(PYTHON_SITE_PKG)
   LDFLAGS+= -L$(PREFIX)/lib/dummy-lib$(APP_NAME)/ -l$(APP_NAME) -lm
-else ifeq ($(OS),darwin_embedded)
-  PILPATH=$(PREFIX)/share/$(APP_NAME)/addons/script.module.pil
-  PILPATHLIB=$(PILPATH)/lib
-  PYTHONPATH=$(PILPATH):$(PYTHON_SITE_PKG)
 endif
 
 SED_FLAG=-i
@@ -55,7 +51,7 @@ export ZLIB_ROOT
 
 BUILD_OPTS=--plat-name $(OS)-$(CPU) --disable-jpeg2000 --disable-webp --disable-imagequant --disable-tiff --disable-xcb --disable-lcms --disable-platform-guessing
 
-export CC CFLAGS
+export CC CFLAGS AR RANLIB
 export PYTHONXINCLUDE=$(PREFIX)/include/python$(PYTHON_VERSION)
 export LDSHARED LDFLAGS PYTHONPATH
 export SETUPTOOLS_EXT_SUFFIX=.so
@@ -63,22 +59,21 @@ export SETUPTOOLS_EXT_SUFFIX=.so
 all: .installed-$(PLATFORM)
 
 
-$(PLATFORM): $(DEPS) | $(TARBALLS_LOCATION)/$(ARCHIVE).$(HASH_TYPE)
+.configured-$(PLATFORM): $(DEPS) | $(TARBALLS_LOCATION)/$(ARCHIVE).$(HASH_TYPE)
 	rm -rf $(PLATFORM)/*; mkdir -p $(PLATFORM)
 	cd $(PLATFORM); $(ARCHIVE_TOOL) $(ARCHIVE_TOOL_FLAGS) $(TARBALLS_LOCATION)/$(ARCHIVE)
 	cd $(PLATFORM); patch -p1 -i ../pillow-crosscompile.patch
 ifeq ($(OS),android)
 	cd $(PLATFORM); patch -p1 -i ../12-android-multi-phase.patch
 endif
+	touch $@
 
 $(PILPATHLIB):
 ifeq ($(OS),android)
 	mkdir -p $(PILPATHLIB)
-else ifeq ($(OS),darwin_embedded)
-	mkdir -p $(PILPATHLIB)
 endif
 
-.installed-$(PLATFORM): $(PLATFORM) $(PILPATHLIB)
+.installed-$(PLATFORM): .configured-$(PLATFORM) $(PILPATHLIB)
 	cd $(PLATFORM); $(NATIVEPREFIX)/bin/python3 setup.py build build_py build_ext $(BUILD_OPTS) install --install-lib $(PILPATH) bdist_egg
 ifeq ($(OS),android)
 	unzip -o $(PLATFORM)/dist/pillow-*.egg -d $(PILPATHLIB)
@@ -88,8 +83,6 @@ ifeq ($(OS),android)
                           -e "s/\.*with.*joinpath('\(.*\)').*/__file__ = os.path.join(os.environ[\"KODI_ANDROID_LIBS\"], '\1')/" \
                           -e 's/^        /    /' \
                               _imaging*.py
-else ifeq ($(OS),darwin_embedded)
-	unzip -o $(PLATFORM)/dist/pillow-*.egg -d $(PILPATHLIB)
 else ifeq ($(TARGET_PLATFORM),webos)
 	unzip -o $(PLATFORM)/dist/pillow-*.egg -d $(PILPATH)
 endif
@@ -97,7 +90,7 @@ endif
 
 clean:
 	$(MAKE) -C $(PLATFORM) clean
-	rm -f .installed-$(PLATFORM)
+	rm -f .installed-$(PLATFORM) .configured-$(PLATFORM)
 
 distclean::
-	rm -rf $(PLATFORM) .installed-$(PLATFORM)
+	rm -rf $(PLATFORM) .installed-$(PLATFORM) .configured-$(PLATFORM)

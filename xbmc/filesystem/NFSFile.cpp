@@ -30,6 +30,9 @@
 #ifdef TARGET_WINDOWS
 #include <fcntl.h>
 #include <sys\stat.h>
+#ifndef S_ISDIR
+#define S_ISDIR(m) (((m) & _S_IFDIR) != 0)
+#endif
 #endif
 
 #if defined(TARGET_WINDOWS)
@@ -670,7 +673,12 @@ bool CNFSFile::Open(const CURL& url)
 
   struct __stat64 tmpBuffer;
 
-  if( Stat(&tmpBuffer) )
+  // nfs_open succeeds on directories, which lets libdvdread / libbluray
+  // mis-classify a folder structure (DVD VIDEO_TS, Bluray BDMV) as a disc image
+  // and run UDF/BDMV parsing on it, which then fails. Reject directories here
+  // so callers fall back to file-by-file mode, the correct behaviour for folder
+  // structures on remote VFS shares.
+  if (Stat(&tmpBuffer) != 0 || S_ISDIR(tmpBuffer.st_mode))
   {
     m_url.Reset();
     Close();
@@ -942,17 +950,12 @@ bool CNFSFile::OpenForWrite(const CURL& url, bool bOverWrite)
   {
     CLog::Log(LOGWARNING, "FileNFS::OpenForWrite() called with overwriting enabled! - {}",
               filename);
-    //create file with proper permissions
-    ret = nfs_creat(m_pNfsContext, filename.c_str(), S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, &m_pFileHandle);
-    //if file was created the file handle isn't valid ... so close it and open later
-    if(ret == 0)
-    {
-      nfs_close(m_pNfsContext,m_pFileHandle);
-      m_pFileHandle = NULL;
-    }
   }
 
-  ret = nfs_open(m_pNfsContext, filename.c_str(), O_RDWR, &m_pFileHandle);
+  // nfs_open2 handles both creation and open atomically;
+  const int flags = bOverWrite ? O_CREAT | O_RDWR | O_EXCL : O_RDWR;
+  const int mode = bOverWrite ? S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH : 0;
+  ret = nfs_open2(m_pNfsContext, filename.c_str(), flags, mode, &m_pFileHandle);
 
   if (ret || m_pFileHandle == NULL)
   {

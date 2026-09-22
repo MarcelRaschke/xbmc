@@ -16,11 +16,14 @@
 #include "cores/VideoPlayer/VideoRenderers/DebugInfo.h"
 #include "guilib/DirtyRegion.h"
 #include "guilib/DispResource.h"
+#include "utils/DisplayInfo.h"
 #include "utils/HDRCapabilities.h"
 
 #include <memory>
 #include <string>
 #include <vector>
+
+inline constexpr const char* OUTPUT_NAME_DEFAULT = "Default";
 
 struct RESOLUTION_WHR
 {
@@ -77,6 +80,8 @@ public:
   virtual bool SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays) = 0;
   virtual void SetDirtyRegions(const CDirtyRegionList& dirtyRegionsList) {}
   virtual int GetBufferAge() { return 2; }
+  //! \brief Bits per color channel of the presented output.
+  virtual int GetOutputBitDepth() const { return 8; }
   virtual bool MoveWindow(int topLeft, int topRight){return false;}
   virtual void FinishModeChange(RESOLUTION res){}
   virtual void FinishWindowResize(int newWidth, int newHeight) {ResizeWindow(newWidth, newHeight, -1, -1);}
@@ -216,6 +221,24 @@ public:
   std::shared_ptr<CDPMSSupport> GetDPMSManager();
 
   /*!
+   * \brief Signal the role of the output surface: video playback or idle GUI.
+   *
+   * Called by video renderers at Configure (with videoPicture) and at UnInit
+   * (nullptr). On platforms with a flip-flop plane-role model (single-plane
+   * GBM), implementations adopt the output plane as the video plane while
+   * a video is playing and revert it to the gui plane on disable. Returns
+   * true if the role transition was applied.
+   */
+  virtual bool SetVideoOutput(const VideoPicture* videoPicture) { return false; }
+
+  /*!
+   * \brief Set colorimetry (BT.709, BT.2020, etc). Passing nullptr as the
+   * parameter resets to "Default" (display then decides based on rez)
+   *
+   */
+  virtual void SetColorimetry(const VideoPicture* videoPicture) {}
+
+  /*!
    * \brief Set the HDR metadata. Passing nullptr as the parameter should
    * disable HDR.
    *
@@ -225,6 +248,11 @@ public:
   virtual HDR_STATUS ToggleHDR() { return HDR_STATUS::HDR_UNSUPPORTED; }
   virtual HDR_STATUS GetOSHDRStatus() { return HDR_STATUS::HDR_UNSUPPORTED; }
   virtual CHDRCapabilities GetDisplayHDRCapabilities() const { return {}; }
+  virtual KODI::UTILS::Eotf GetEotf() const { return KODI::UTILS::Eotf::TRADITIONAL_SDR; }
+  virtual KODI::UTILS::Colorimetry GetColorimetry() const
+  {
+    return KODI::UTILS::Colorimetry::DEFAULT;
+  }
   static const char* SETTING_WINSYSTEM_IS_HDR_DISPLAY;
   virtual float GetGuiSdrPeakLuminance() const { return .0f; }
   virtual bool HasSystemSdrPeakLuminance() { return false; }
@@ -236,6 +264,23 @@ public:
    */
   virtual bool SupportsVideoSuperResolution() { return false; }
 
+  // GUI compositing for HDR: render GUI to FBO, composite with tone mapping
+  // colorTransfer: AVCOL_TRC_SMPTE2084 (PQ) or AVCOL_TRC_ARIB_STD_B67 (HLG), 0 to disable
+  virtual bool SetGuiCompositing(int colorTransfer) { return false; }
+  // guiWillRender: hint that GUI rendering is about to fire this frame.
+  // When false, implementations should skip FBO bind/clear since no GUI
+  // draws will land in the FBO this frame.
+  virtual bool BeginGuiComposite(bool guiWillRender) { return false; }
+  virtual void EndGuiComposite() {}
+  virtual void CompositeGui() {}
+
+  // True when GUI is rendered to an FBO that is then color-transformed
+  // (sRGB -> PQ/HLG) and composited against HDR video in that non-linear
+  // space. Alpha blending assumes linear light; blending non-linear values
+  // yields wrong transparency. When true, GUI draws select a compensated
+  // alpha blend (see CGUIFontTTFGLES::FirstBegin).
+  virtual bool IsHdrComposite() const { return false; }
+
   /*!
    * \brief Gets debug info from video renderer for use in "Debug Info OSD" (Alt + O)
    *
@@ -243,6 +288,23 @@ public:
   virtual DEBUG_INFO_RENDER GetDebugInfo() { return {}; }
 
   virtual std::vector<std::string> GetConnectedOutputs() { return {}; }
+
+  /*!
+    * \brief Returns the number of physical monitors/outputs.
+    *
+    * Every backend's GetConnectedOutputs() includes OUTPUT_NAME_DEFAULT as
+    * the first entry; this is a placeholder (not a physical display) that
+    * means "let the system choose". This method excludes that placeholder
+    * from the count.
+    *
+    * \return Number of physical monitors/outputs.
+    */
+  virtual size_t GetPhysicalOutputCount()
+  {
+    const auto outputs = GetConnectedOutputs();
+    return (!outputs.empty() && outputs[0] == OUTPUT_NAME_DEFAULT) ? outputs.size() - 1
+                                                                   : outputs.size();
+  }
 
   /*!
    * \brief Return true when HDR display is available and enabled in settings

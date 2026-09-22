@@ -97,14 +97,21 @@ protected:
   CRect m_sourceRect;
   float m_fullDestWidth{0.0f};
   float m_fullDestHeight{0.0f};
+  float m_lastTargetWidth{0.0f};
+  float m_lastTargetHeight{0.0f};
   ViewportCoordinates m_rotatedDestCoords{};
 
   // Video shaders
-  void Updateshaders();
+  void UpdateShaders();
   std::unique_ptr<SHADER::IShaderPreset> m_shaderPreset;
 
   bool m_bShadersNeedUpdate = true;
   bool m_bUseShaderPreset = false;
+
+  // Last reported geometry, so the log carries changes rather than every frame
+  CRect m_lastLoggedDestRect;
+  CRect m_lastLoggedFullDestRect;
+  STRETCHMODE m_lastLoggedStretchMode{static_cast<STRETCHMODE>(-1)};
 
 private:
   /*!

@@ -87,6 +87,7 @@ bool CGUIWindowWeather::OnMessage(CGUIMessage& message)
       {
         UpdateLocations();
         SetProps();
+        RefreshImages();
         return true;
       }
       break;
@@ -104,11 +105,11 @@ bool CGUIWindowWeather::OnMessage(CGUIMessage& message)
     {
       if (message.GetSenderId() == 0 && m_maxLocation > 0) //handle only message from builtin
       {
-        // Clamp location between 1 and m_maxLocation
+        // Clamp location between 1 and m_maxLocation & cast maxLoc to avoid signed modulo with unsigned type
+        // maxLoc is added before the modulo operation to ensure non-negative operands, for correct wrapping behavior
         const CWeatherManager& wmgr{CServiceBroker::GetWeatherManager()};
-        int v = (wmgr.GetLocation() + message.GetParam1() - 1) % m_maxLocation + 1;
-        if (v < 1)
-          v += m_maxLocation;
+        const int maxLoc{static_cast<int>(m_maxLocation)};
+        int v = (wmgr.GetLocation() + message.GetParam1() - 1 + maxLoc) % maxLoc + 1;
         SetLocation(v);
         return true;
       }
@@ -294,4 +295,16 @@ void CGUIWindowWeather::ClearProps()
     if (!value.isNull())
       SetProperty(name, value);
   }
+}
+
+void CGUIWindowWeather::RefreshImages()
+{
+  // The add-on might have replaced the image files it provides (for example the images of an
+  // animated radar loop) without changing the window properties containing the image paths.
+  // Tell the controls of this window to reload their images to avoid displaying stale data.
+  // This is essential for controls that were hidden while the update was in progress (for
+  // example via 'Weather.IsUpdating'), because hidden controls do not re-evaluate their image
+  // paths and thus never notice changed content.
+  CGUIMessage msg{GUI_MSG_NOTIFY_ALL, GetID(), 0, GUI_MSG_REFRESH_THUMBS};
+  OnMessage(msg);
 }

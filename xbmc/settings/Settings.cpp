@@ -372,7 +372,10 @@ void CSettings::InitializeOptionFillers()
 {
   // register setting option fillers
 #ifdef HAS_OPTICAL_DRIVE
-  GetSettingsManager()->RegisterSettingOptionsFiller("audiocdactions", MEDIA_DETECT::CAutorun::SettingOptionAudioCdActionsFiller);
+  GetSettingsManager()->RegisterSettingOptionsFiller(
+      "audiocdactions", MEDIA_DETECT::CAutorun::SettingOptionAudioCdActionsFiller);
+  GetSettingsManager()->RegisterSettingOptionsFiller(
+      "videodiscactions", MEDIA_DETECT::CAutorun::SettingOptionVideoDiscActionsFiller);
 #endif
   GetSettingsManager()->RegisterSettingOptionsFiller("charsets", CCharsetConverter::SettingOptionsCharsetsFiller);
   GetSettingsManager()->RegisterSettingOptionsFiller("fonts", GUIFontManager::SettingOptionsFontsFiller);
@@ -381,13 +384,35 @@ void CSettings::InitializeOptionFillers()
   GetSettingsManager()->RegisterSettingOptionsFiller("languagenames", CLangInfo::SettingOptionsLanguageNamesFiller);
   GetSettingsManager()->RegisterSettingOptionsFiller("refreshchangedelays", CDisplaySettings::SettingOptionsRefreshChangeDelaysFiller);
   GetSettingsManager()->RegisterSettingOptionsFiller("refreshrates", CDisplaySettings::SettingOptionsRefreshRatesFiller);
-  GetSettingsManager()->RegisterSettingOptionsFiller("regions", CLangInfo::SettingOptionsRegionsFiller);
-  GetSettingsManager()->RegisterSettingOptionsFiller("shortdateformats", CLangInfo::SettingOptionsShortDateFormatsFiller);
-  GetSettingsManager()->RegisterSettingOptionsFiller("longdateformats", CLangInfo::SettingOptionsLongDateFormatsFiller);
-  GetSettingsManager()->RegisterSettingOptionsFiller("timeformats", CLangInfo::SettingOptionsTimeFormatsFiller);
-  GetSettingsManager()->RegisterSettingOptionsFiller("24hourclockformats", CLangInfo::SettingOptions24HourClockFormatsFiller);
-  GetSettingsManager()->RegisterSettingOptionsFiller("speedunits", CLangInfo::SettingOptionsSpeedUnitsFiller);
-  GetSettingsManager()->RegisterSettingOptionsFiller("temperatureunits", CLangInfo::SettingOptionsTemperatureUnitsFiller);
+
+  GetSettingsManager()->RegisterSettingOptionsFiller(
+      "regions", [](const std::shared_ptr<const CSetting>& setting, StringSettingOptions& list,
+                    std::string& current)
+      { CLangInfo::SettingOptionsRegionsFiller(setting, list, current, g_langInfo); });
+  GetSettingsManager()->RegisterSettingOptionsFiller(
+      "shortdateformats", [](const std::shared_ptr<const CSetting>& setting,
+                             StringSettingOptions& list, std::string& current)
+      { CLangInfo::SettingOptionsShortDateFormatsFiller(setting, list, current, g_langInfo); });
+  GetSettingsManager()->RegisterSettingOptionsFiller(
+      "longdateformats", [](const std::shared_ptr<const CSetting>& setting,
+                            StringSettingOptions& list, std::string& current)
+      { CLangInfo::SettingOptionsLongDateFormatsFiller(setting, list, current, g_langInfo); });
+  GetSettingsManager()->RegisterSettingOptionsFiller(
+      "timeformats", [](const std::shared_ptr<const CSetting>& setting, StringSettingOptions& list,
+                        std::string& current)
+      { CLangInfo::SettingOptionsTimeFormatsFiller(setting, list, current, g_langInfo); });
+  GetSettingsManager()->RegisterSettingOptionsFiller(
+      "24hourclockformats", [](const std::shared_ptr<const CSetting>& setting,
+                               StringSettingOptions& list, std::string& current)
+      { CLangInfo::SettingOptions24HourClockFormatsFiller(setting, list, current, g_langInfo); });
+  GetSettingsManager()->RegisterSettingOptionsFiller(
+      "speedunits", [](const std::shared_ptr<const CSetting>& setting, StringSettingOptions& list,
+                       std::string& current)
+      { CLangInfo::SettingOptionsSpeedUnitsFiller(setting, list, current, g_langInfo); });
+  GetSettingsManager()->RegisterSettingOptionsFiller(
+      "temperatureunits", [](const std::shared_ptr<const CSetting>& setting,
+                             StringSettingOptions& list, std::string& current)
+      { CLangInfo::SettingOptionsTemperatureUnitsFiller(setting, list, current, g_langInfo); });
   GetSettingsManager()->RegisterSettingOptionsFiller("rendermethods", CBaseRenderer::SettingOptionsRenderMethodsFiller);
   GetSettingsManager()->RegisterSettingOptionsFiller("modes", CDisplaySettings::SettingOptionsModesFiller);
   GetSettingsManager()->RegisterSettingOptionsFiller("resolutions", CDisplaySettings::SettingOptionsResolutionsFiller);
@@ -426,11 +451,14 @@ void CSettings::InitializeOptionFillers()
       "playerqueuetimesizes", CPlayerSettings::SettingOptionsQueueTimeSizesFiller);
   GetSettingsManager()->RegisterSettingOptionsFiller(
       "playerqueuedatasizes", CPlayerSettings::SettingOptionsQueueDataSizesFiller);
+  GetSettingsManager()->RegisterSettingOptionsFiller(
+      "playerfastforwardspeeds", CPlayerSettings::SettingOptionsFastForwardSpeeds);
 }
 
 void CSettings::UninitializeOptionFillers()
 {
   GetSettingsManager()->UnregisterSettingOptionsFiller("audiocdactions");
+  GetSettingsManager()->UnregisterSettingOptionsFiller("videodiscactions");
   GetSettingsManager()->UnregisterSettingOptionsFiller("audiocdencoders");
   GetSettingsManager()->UnregisterSettingOptionsFiller("charsets");
   GetSettingsManager()->UnregisterSettingOptionsFiller("fontheights");
@@ -480,6 +508,7 @@ void CSettings::UninitializeOptionFillers()
   GetSettingsManager()->UnregisterSettingOptionsFiller("filecachechunksizes");
   GetSettingsManager()->UnregisterSettingOptionsFiller("playerqueuetimesizes");
   GetSettingsManager()->UnregisterSettingOptionsFiller("playerqueuedatasizes");
+  GetSettingsManager()->UnregisterSettingOptionsFiller("playerfastforwardspeeds");
 }
 
 void CSettings::InitializeConditions()

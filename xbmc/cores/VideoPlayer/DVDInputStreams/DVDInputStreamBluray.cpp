@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2005-2018 Team Kodi
+ *  Copyright (C) 2005-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -16,11 +16,10 @@
 #include "URL.h"
 #include "filesystem/BlurayCallback.h"
 #include "filesystem/SpecialProtocol.h"
-#include "settings/DiscSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/Geometry.h"
-#include "utils/LangCodeExpander.h"
+#include "utils/LanguageTag.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/XTimeUtils.h"
@@ -29,13 +28,15 @@
 #include "video/VideoInfoTag.h"
 
 #include <chrono>
-#include <functional>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include <libbluray/bluray-version.h>
 #include <libbluray/bluray.h>
+#include <libbluray/clpi_data.h>
 #include <libbluray/log_control.h>
 
 #define LIBBLURAY_BYTESEEK 0
@@ -210,7 +211,12 @@ bool CDVDInputStreamBluray::Open()
       URIUtils::RemoveSlashAtEnd(strPath);
     }
     root = strPath;
-    filename = URIUtils::GetFileName(m_item.GetPath());
+    // Use the resolved (dynamic) path so playlist selectors survive plugin
+    // resolution and library .strm playback. m_item.GetPath() returns the
+    // original library reference (e.g. .strm file) which has no .mpls
+    // extension, causing the MPLS title selector to be lost and playback
+    // to fall through to navigation/main-feature mode.
+    filename = URIUtils::GetFileName(m_item.GetDynPath());
   }
 
   // root should not have trailing slash
@@ -255,6 +261,15 @@ bool CDVDInputStreamBluray::Open()
   else
   {
     m_rootPath = root;
+
+#if defined(HAS_UDFREAD)
+    // Only in files mode does libbluray reach the disc through Kodi's filesystem, opening a dozen
+    // or so files and directories on it, and then the clips as they play. On a disc image each of
+    // those opens would otherwise re-mount the image's UDF volume, so keep it mounted for as long
+    // as the disc is open. (Stream mode reads the image itself, disc mode is a physical disc.)
+    m_udfMount.emplace(root);
+#endif
+
     if (!bd_open_files(m_bd, &m_rootPath, CBlurayCallback::dir_open, CBlurayCallback::file_open))
     {
       CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed to open {} in files mode",
@@ -325,17 +340,10 @@ bool CDVDInputStreamBluray::Open()
     return false;
   }
 
-  int mode = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_DISC_PLAYBACK);
-
   if (URIUtils::HasExtension(filename, ".mpls"))
   {
     m_navmode = false;
     m_titleInfo = GetTitleFile(filename);
-  }
-  else if (mode == BD_PLAYBACK_MAIN_TITLE)
-  {
-    m_navmode = false;
-    m_titleInfo = GetTitleLongest();
   }
   else if (resumable && m_item.GetStartOffset() == STARTOFFSET_RESUME && m_item.IsResumable())
   {
@@ -416,6 +424,11 @@ void CDVDInputStreamBluray::Close()
   m_bd = nullptr;
   m_pstream.reset();
   m_rootPath.clear();
+
+#if defined(HAS_UDFREAD)
+  // Released last, as the files opened from the volume are closed above
+  m_udfMount.reset();
+#endif
 }
 
 void CDVDInputStreamBluray::FreeTitleInfo()
@@ -425,6 +438,30 @@ void CDVDInputStreamBluray::FreeTitleInfo()
 
   m_titleInfo = nullptr;
   m_clip = nullptr;
+  FreeClipInfo();
+}
+
+void CDVDInputStreamBluray::FreeClipInfo()
+{
+  if (m_clipInfo)
+    bd_free_clpi(m_clipInfo);
+
+  m_clipInfo = nullptr;
+}
+
+void CDVDInputStreamBluray::UpdateClipInfo(unsigned int playItem)
+{
+  FreeClipInfo();
+
+  // A copy of the .clpi libbluray read when it opened the title, so this costs no disc access.
+  // The play items of the playlist being played and the clips of the open title are both in the
+  // order the .mpls lists them, so the index of one is the index of the other.
+  m_clipInfo = bd_get_clpi(m_bd, playItem);
+  if (!m_clipInfo)
+    CLog::Log(LOGDEBUG,
+              "CDVDInputStreamBluray::UpdateClipInfo - no clip information for play item {} - the "
+              "streams the playlist does not present will have no language",
+              playItem);
 }
 
 void CDVDInputStreamBluray::ProcessEvent() {
@@ -552,7 +589,10 @@ void CDVDInputStreamBluray::ProcessEvent() {
   case BD_EVENT_PLAYITEM:
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYITEM {}", m_event.param);
     if (m_titleInfo && m_event.param < m_titleInfo->clip_count)
+    {
       m_clip = &m_titleInfo->clips[m_event.param];
+      UpdateClipInfo(m_event.param);
+    }
     break;
 
   case BD_EVENT_CHAPTER:
@@ -976,6 +1016,21 @@ int CDVDInputStreamBluray::GetChapter()
     return 0;
 }
 
+void CDVDInputStreamBluray::GetChapterName(std::string& name, int ch)
+{
+  name.clear();
+
+#if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 5, 0))
+  if (ch == -1 || ch > GetChapterCount())
+    ch = GetChapter();
+  if (ch < 1 || ch > GetChapterCount())
+    return;
+
+  if (m_titleInfo && m_titleInfo->chapters && m_titleInfo->chapters[ch - 1].chapter_name)
+    name = m_titleInfo->chapters[ch - 1].chapter_name;
+#endif
+}
+
 bool CDVDInputStreamBluray::SeekChapter(int ch)
 {
   if(m_titleInfo && bd_seek_chapter(m_bd, ch-1) < 0)
@@ -1052,23 +1107,89 @@ static bool find_stream(int pid, BLURAY_STREAM_INFO *info, int count, std::strin
   return true;
 }
 
+static bool is_first_stream(int pid, const BLURAY_STREAM_INFO* info, int count)
+{
+  return count > 0 && info[0].pid == static_cast<uint16_t>(pid);
+}
+
+bool CDVDInputStreamBluray::GetPlaylistStreamLanguage(int pid, std::string& language) const
+{
+  if (pid == HDMV_PID_VIDEO)
+    return find_stream(pid, m_clip->video_streams, m_clip->video_stream_count, language);
+  if (HDMV_PID_AUDIO_FIRST <= pid && pid <= HDMV_PID_AUDIO_LAST)
+    return find_stream(pid, m_clip->audio_streams, m_clip->audio_stream_count, language);
+  if ((HDMV_PID_PG_FIRST <= pid && pid <= HDMV_PID_PG_LAST) ||
+      (HDMV_PID_PG_HDR_FIRST <= pid && pid <= HDMV_PID_PG_HDR_LAST))
+    return find_stream(pid, m_clip->pg_streams, m_clip->pg_stream_count, language);
+  if (HDMV_PID_IG_FIRST <= pid && pid <= HDMV_PID_IG_LAST)
+    return find_stream(pid, m_clip->ig_streams, m_clip->ig_stream_count, language);
+
+  CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::GetStreamInfo - unhandled pid {}", pid);
+  return false;
+}
+
+bool CDVDInputStreamBluray::GetClipStreamLanguage(int pid, std::string& language) const
+{
+  if (!m_clipInfo)
+    return false;
+
+  const CLPI_PROG_INFO& programs{m_clipInfo->program};
+  for (unsigned int i = 0; i < programs.num_prog; ++i)
+  {
+    const CLPI_PROG& program{programs.progs[i]};
+    for (unsigned int j = 0; j < program.num_streams; ++j)
+    {
+      const CLPI_PROG_STREAM& stream{program.streams[j]};
+      if (stream.pid != static_cast<uint16_t>(pid))
+        continue;
+
+      // The language is three characters, and absent for a stream that has none (video)
+      if (stream.lang[0] == 0)
+        return false;
+
+      language = std::string(stream.lang, strnlen(stream.lang, sizeof(stream.lang)));
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void CDVDInputStreamBluray::GetStreamInfo(int pid, std::string &language)
 {
   if(!m_titleInfo || !m_clip)
     return;
 
-  if (pid == HDMV_PID_VIDEO)
-    find_stream(pid, m_clip->video_streams, m_clip->video_stream_count, language);
-  else if (HDMV_PID_AUDIO_FIRST <= pid && pid <= HDMV_PID_AUDIO_LAST)
-    find_stream(pid, m_clip->audio_streams, m_clip->audio_stream_count, language);
-  else if (HDMV_PID_PG_FIRST <= pid && pid <= HDMV_PID_PG_LAST)
-    find_stream(pid, m_clip->pg_streams, m_clip->pg_stream_count, language);
-  else if (HDMV_PID_PG_HDR_FIRST <= pid && pid <= HDMV_PID_PG_HDR_LAST)
-    find_stream(pid, m_clip->pg_streams, m_clip->pg_stream_count, language);
-  else if (HDMV_PID_IG_FIRST <= pid && pid <= HDMV_PID_IG_LAST)
-    find_stream(pid, m_clip->ig_streams, m_clip->ig_stream_count, language);
-  else
-    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::GetStreamInfo - unhandled pid {}", pid);
+  if (GetPlaylistStreamLanguage(pid, language))
+    return;
+
+  // The playlist's stream number table lists only the streams it presents, whereas the m2ts of its
+  // clip commonly carries more - two playlists sharing a clip each present their own selection of
+  // them. The demuxer exposes every stream of the transport stream, so the language of one the
+  // playlist does not present comes from the clip information, leaving it named rather than
+  // unknown. Which stream the playlist starts on is unaffected (see IsDefaultStream).
+  if (!GetClipStreamLanguage(pid, language))
+    CLog::Log(LOGDEBUG,
+              "CDVDInputStreamBluray::GetStreamInfo - no language for pid {} in the playlist or "
+              "its clip",
+              pid);
+}
+
+bool CDVDInputStreamBluray::IsDefaultStream(int pid) const
+{
+  if (!m_titleInfo || !m_clip)
+    return false;
+
+  // The clip's stream number table lists the primary streams in stream number order, and a player
+  // starts with audio stream number 1 (PSR1) and presentation graphic stream number 1 (PSR2), so
+  // the first entry of each is the disc's default.
+  if (HDMV_PID_AUDIO_FIRST <= pid && pid <= HDMV_PID_AUDIO_LAST)
+    return is_first_stream(pid, m_clip->audio_streams, m_clip->audio_stream_count);
+  if ((HDMV_PID_PG_FIRST <= pid && pid <= HDMV_PID_PG_LAST) ||
+      (HDMV_PID_PG_HDR_FIRST <= pid && pid <= HDMV_PID_PG_HDR_LAST))
+    return is_first_stream(pid, m_clip->pg_streams, m_clip->pg_stream_count);
+
+  return false;
 }
 
 CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
@@ -1245,18 +1366,17 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_5_v2_4);
 #endif
 
-  std::string langCode;
-  g_LangCodeExpander.ConvertToISO6392T(g_langInfo.GetDVDAudioLanguage(), langCode);
-  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_AUDIO_LANG, langCode.c_str());
+  const std::string audioLang{g_langInfo.GetDVDAudioLanguage().AsIso6392T()};
+  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_AUDIO_LANG, audioLang.c_str());
 
-  g_LangCodeExpander.ConvertToISO6392T(g_langInfo.GetDVDSubtitleLanguage(), langCode);
-  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_PG_LANG, langCode.c_str());
+  const std::string subtitleLang{g_langInfo.GetDVDSubtitleLanguage().AsIso6392T()};
+  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_PG_LANG, subtitleLang.c_str());
 
-  g_LangCodeExpander.ConvertToISO6392T(g_langInfo.GetDVDMenuLanguage(), langCode);
-  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_MENU_LANG, langCode.c_str());
+  const std::string menuLang{g_langInfo.GetDVDMenuLanguage().AsIso6392T()};
+  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_MENU_LANG, menuLang.c_str());
 
-  g_LangCodeExpander.ConvertToISO6391(g_langInfo.GetRegionLocale(), langCode);
-  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_COUNTRY_CODE, langCode.c_str());
+  const std::string countryCode{g_langInfo.GetRegionCodeAlpha2()};
+  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_COUNTRY_CODE, countryCode.c_str());
 
 #ifdef HAVE_LIBBLURAY_BDJ
   std::string cacheDir = CSpecialProtocol::TranslatePath("special://userdata/cache/bluray/cache");

@@ -1,7 +1,7 @@
 include ../../Makefile.include GNUTLS-VERSION ../../download-files.include
 DEPS = ../../Makefile.include Makefile ../../download-files.include \
-                              add-dl-as-private-lib.patch \
-                              03-support-correct-cisdigit.patch
+                              0001-clang-lt-17-fix.patch \
+                              0002-makefile-am-wasm-fix.patch
 
 # disable rpl_malloc and rpl_realloc symbols in glib
 # causes linking errors in libmicrohttpd and ffmpeg with missing symbols
@@ -43,15 +43,16 @@ LIBDYLIB=$(PLATFORM)/lib/.libs/lib$(LIBNAME).a
 
 all: .installed-$(PLATFORM)
 
-$(PLATFORM): $(DEPS) | $(TARBALLS_LOCATION)/$(ARCHIVE).$(HASH_TYPE)
+.configured-$(PLATFORM): $(DEPS) | $(TARBALLS_LOCATION)/$(ARCHIVE).$(HASH_TYPE)
 	rm -rf $(PLATFORM)/*; mkdir -p $(PLATFORM)
 	cd $(PLATFORM); $(ARCHIVE_TOOL) $(ARCHIVE_TOOL_FLAGS) $(TARBALLS_LOCATION)/$(ARCHIVE)
-	cd $(PLATFORM); patch -p1 -i ../add-dl-as-private-lib.patch
-	cd $(PLATFORM); patch -p1 -i ../03-support-correct-cisdigit.patch
+	cd $(PLATFORM); patch -p1 -i ../0001-clang-lt-17-fix.patch
+	cd $(PLATFORM); patch -p1 -i ../0002-makefile-am-wasm-fix.patch
 	cd $(PLATFORM); $(AUTORECONF) -vif
 	cd $(PLATFORM); $(CONFIGURE)
+	touch $@
 
-$(LIBDYLIB): $(PLATFORM)
+$(LIBDYLIB): .configured-$(PLATFORM)
 	$(MAKE) -C $(PLATFORM)
 
 .installed-$(PLATFORM): $(LIBDYLIB)
@@ -60,7 +61,7 @@ $(LIBDYLIB): $(PLATFORM)
 
 clean:
 	$(MAKE) -C $(PLATFORM) clean
-	rm -f .installed-$(PLATFORM)
+	rm -f .installed-$(PLATFORM) .configured-$(PLATFORM)
 
 distclean::
-	rm -rf $(PLATFORM) .installed-$(PLATFORM)
+	rm -rf $(PLATFORM) .installed-$(PLATFORM) .configured-$(PLATFORM)

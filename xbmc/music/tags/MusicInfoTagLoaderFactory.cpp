@@ -14,6 +14,7 @@
 #endif // HAS_OPTICAL_DRIVE
 #include "MusicInfoTagLoaderDatabase.h"
 #include "MusicInfoTagLoaderFFmpeg.h"
+#include "MusicInfoTagLoaderMatroska.h"
 #include "MusicInfoTagLoaderShn.h"
 #include "ServiceBroker.h"
 #include "TagLoaderTagLib.h"
@@ -64,31 +65,32 @@ IMusicInfoTagLoader* CMusicInfoTagLoaderFactory::CreateLoader(const CFileItem& i
   }
 
   if (strExtension == "aac" || strExtension == "ape" || strExtension == "mac" ||
-      strExtension == "mp3" || strExtension == "wma" || strExtension == "flac" ||
-      strExtension == "m4a" || strExtension == "mp4" || strExtension == "m4b" ||
-      strExtension == "m4v" || strExtension == "mpc" || strExtension == "mpp" ||
-      strExtension == "mp+" || strExtension == "ogg" || strExtension == "oga" ||
-      strExtension == "opus" || strExtension == "aif" || strExtension == "aiff" ||
-      strExtension == "wav" || strExtension == "mod" || strExtension == "s3m" ||
-      strExtension == "it" || strExtension == "xm" || strExtension == "wv")
+      strExtension == "mp2" || strExtension == "mp3" || strExtension == "wma" ||
+      strExtension == "flac" || strExtension == "m4a" || strExtension == "mp4" ||
+      strExtension == "m4b" || strExtension == "m4v" || strExtension == "mpc" ||
+      strExtension == "mpp" || strExtension == "mp+" || strExtension == "ogg" ||
+      strExtension == "oga" || strExtension == "opus" || strExtension == "aif" ||
+      strExtension == "aiff" || strExtension == "wav" || strExtension == "mod" ||
+      strExtension == "s3m" || strExtension == "it" || strExtension == "xm" || strExtension == "wv")
   {
-    CTagLoaderTagLib *pTagLoader = new CTagLoaderTagLib();
+    CTagLoaderTagLib* pTagLoader = new CTagLoaderTagLib();
     return pTagLoader;
   }
 #ifdef HAS_OPTICAL_DRIVE
   else if (strExtension == "cdda")
   {
-    CMusicInfoTagLoaderCDDA *pTagLoader = new CMusicInfoTagLoaderCDDA();
+    CMusicInfoTagLoaderCDDA* pTagLoader = new CMusicInfoTagLoaderCDDA();
     return pTagLoader;
   }
 #endif
   else if (strExtension == "shn")
   {
-    CMusicInfoTagLoaderSHN *pTagLoader = new CMusicInfoTagLoaderSHN();
+    CMusicInfoTagLoaderSHN* pTagLoader = new CMusicInfoTagLoaderSHN();
     return pTagLoader;
   }
-  else if (strExtension == "mka" || strExtension == "dsf" ||
-           strExtension == "dff")
+  else if (strExtension == "mka" || strExtension == "mkv")
+    return new CMusicInfoTagLoaderMatroska();
+  else if (strExtension == "dsf" || strExtension == "dff")
     return new CMusicInfoTagLoaderFFmpeg();
 
   return NULL;

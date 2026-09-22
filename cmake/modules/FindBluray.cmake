@@ -16,9 +16,6 @@ if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
     find_package(Meson REQUIRED)
     find_package(Ninja REQUIRED)
 
-    # Required for building libbluray bd jars, however is optional for libbluray
-    find_package(ANT)
-
     find_package(Udfread 1.2.0 REQUIRED ${SEARCH_QUIET})
     find_package(FreeType REQUIRED ${SEARCH_QUIET})
     find_package(LibXml2 REQUIRED ${SEARCH_QUIET})
@@ -29,26 +26,56 @@ if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
       list(APPEND additional_env_mod --modify FONTCONFIG_ROOT=set:${DEPENDS_PATH})
     endif()
 
-    if(TARGET ANT::ANT)
-      find_package(Java COMPONENTS Development)
+    set(temp_extras_arg -Dbdj_jar=disabled)
+    set(temp_env_mod --unset=JAVA_HOME)
 
-      if(Java_Development_FOUND)
-        get_filename_component(java_binpath ${Java_JAVAC_EXECUTABLE} DIRECTORY)
-        get_filename_component(java_homepath ${java_binpath} DIRECTORY)
+    if(ENABLE_BLURAY_JAR)
+      # Required for building libbluray bd jars, however is optional for libbluray
+      find_package(ANT)
 
-        get_target_property(ANT_PATH ANT::ANT ANT_PATH)
-        get_target_property(ANT_HOME ANT::ANT ANT_HOME)
+      if(TARGET ANT::ANT)
+        find_package(Java COMPONENTS Development)
 
-        if(${CMAKE_VERSION} VERSION_GREATER_EQUAL 3.26)
-          list(APPEND additional_env_mod --modify PATH=path_list_prepend:${NATIVEPREFIX}/bin
-                                         --modify PATH=path_list_prepend:${java_binpath}
-                                         --modify PATH=path_list_prepend:${ANT_PATH}
-                                         --modify ANT_HOME=set:${ANT_HOME}
-                                         --modify JAVA_HOME=set:${java_homepath})
+        if(Java_Development_FOUND)
+          get_filename_component(java_binpath ${Java_JAVAC_EXECUTABLE} DIRECTORY)
 
-          set(build_env_mod ${CMAKE_COMMAND} -E env ${additional_env_mod})
+          # Apple hosts have a complicated potential combination of binary and include paths
+          # If on an apple host, fall back to using the /usr/libexec/java_home binary to search
+          # for path based on the found version in the find_package(Java) call.
+          # This avoids the issue when the java binary is found in /usr/bin, as apple has
+          # potential helpers that dont necessarily stem from JAVA_HOME env vars
+          if(CMAKE_HOST_APPLE)
+            execute_process(COMMAND /usr/libexec/java_home -v ${Java_VERSION}
+                            ERROR_QUIET
+                            OUTPUT_VARIABLE java_homepath
+                            OUTPUT_STRIP_TRAILING_WHITESPACE)
+          else()
+            get_filename_component(java_homepath ${java_binpath} DIRECTORY)
+          endif()
+
+          get_target_property(ANT_PATH ANT::ANT ANT_PATH)
+          get_target_property(ANT_HOME ANT::ANT ANT_HOME)
+
+          if(${CMAKE_VERSION} VERSION_GREATER_EQUAL 3.26)
+            list(APPEND additional_env_mod --modify PATH=path_list_prepend:${NATIVEPREFIX}/bin
+                                           --modify PATH=path_list_prepend:${java_binpath}
+                                           --modify PATH=path_list_prepend:${ANT_PATH}
+                                           --modify ANT_HOME=set:${ANT_HOME}
+                                           --modify JAVA_HOME=set:${java_homepath})
+
+            set(build_env_mod ${CMAKE_COMMAND} -E env ${additional_env_mod})
+          endif()
+          set(temp_extras_arg -Djdk_home=${java_homepath} -Dbdj_jar=enabled)
+          unset(temp_env_mod)
+
+          set(build_jar ON)
         endif()
       endif()
+    endif()
+
+    list(APPEND ${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_BUILD_EXTRAS ${temp_extras_arg})
+    if(temp_env_mod)
+      list(APPEND additional_env_mod ${temp_env_mod})
     endif()
 
     if(APPLE)
@@ -112,12 +139,15 @@ if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
                           -Ddefault_library=${${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_libType}
                           -Denable_tools=false
                           -Dembed_udfread=false
+                          ${${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_BUILD_EXTRAS}
                           ${${${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC}_CROSS_FILE})
 
     set(BUILD_COMMAND ${${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_dev_env}
                       ${build_env_mod}
                       ${NINJA_EXECUTABLE} -C ./build)
-    set(INSTALL_COMMAND ${NINJA_EXECUTABLE} -C ./build install)
+    set(INSTALL_COMMAND ${${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_dev_env}
+                        ${build_env_mod}
+                        ${NINJA_EXECUTABLE} -C ./build install)
     set(BUILD_IN_SOURCE 1)
 
     BUILD_DEP_TARGET()
@@ -164,7 +194,7 @@ if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
   SEARCH_EXISTING_PACKAGES()
 
   if((${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME}_VERSION VERSION_LESS ${${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_VER} AND ENABLE_INTERNAL_BLURAY) OR
-     ((CORE_SYSTEM_NAME STREQUAL linux OR CORE_SYSTEM_NAME STREQUAL freebsd) AND ENABLE_INTERNAL_BLURAY) OR
+     (((CORE_SYSTEM_NAME STREQUAL linux AND NOT "webos" IN_LIST CORE_PLATFORM_NAME_LC) OR CORE_SYSTEM_NAME STREQUAL freebsd) AND ENABLE_INTERNAL_BLURAY) OR
      (DEFINED ${CMAKE_FIND_PACKAGE_NAME}_FORCE_BUILD))
     message(STATUS "Building ${${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC}: \(version \"${${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_VER}\"\)")
 
@@ -181,6 +211,11 @@ if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
     else()
       SETUP_BUILD_TARGET()
       add_dependencies(${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} ${${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_BUILD_NAME})
+
+      if(build_jar)
+        set_property(TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} PROPERTY BDJ_BUILD ON)
+        set_property(TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} PROPERTY BDJ_VERSION ${${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_VER})
+      endif()
     endif()
 
     set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_COMPILE_DEFINITIONS HAVE_LIBBLURAY)
@@ -188,6 +223,12 @@ if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
     # This is incorrectly applied to all platforms. Requires its own handling in the future
     if(NOT CORE_PLATFORM_NAME_LC STREQUAL windowsstore)
       list(APPEND ${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_COMPILE_DEFINITIONS HAVE_LIBBLURAY_BDJ)
+    endif()
+
+    find_package(BlurayBDJ ${SEARCH_QUIET})
+    if(TARGET Extras::BlurayBDJ)
+      #Todo: Relocate the HAVE_LIBBLURAY_BDJ compile definition inside the succesful bdj target?
+      add_dependencies(Extras::BlurayBDJ ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
     endif()
 
     ADD_TARGET_COMPILE_DEFINITION()

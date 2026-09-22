@@ -23,7 +23,7 @@ class CRendererFactoryDMAOpenGLES : public IRendererFactory
 public:
   ~CRendererFactoryDMAOpenGLES() override = default;
 
-  // implementation of IRendererFactory
+  // Implementation of IRendererFactory
   std::string RenderSystemName() const override;
   CRPBaseRenderer* CreateRenderer(const CRenderSettings& settings,
                                   CRenderContext& context,
@@ -34,9 +34,9 @@ public:
 /**
  * @brief Special CRPBaseRenderer implementation to handle Direct Memory
  *        Access (DMA) buffer types. For specific use with
- *        CRenderBufferPoolDMA and CRenderBufferDMA. A windowing system
- *        must register use of this renderer and register at least one
- *        CBufferObject types.
+ *        CRenderBufferPoolDMAOpenGLES and CRenderBufferDMAOpenGLES. A windowing
+ *        system must register use of this renderer and register at least one
+ *        CBufferObject type.
  */
 class CRPRendererDMAOpenGLES : public CRPRendererOpenGLES
 {
@@ -48,6 +48,7 @@ public:
 
 protected:
   // Implementation of CRPRendererOpenGLES
+  void FlushInternal() override;
   void Render(uint8_t alpha) override;
 
   std::map<CRenderBufferDMA*, std::unique_ptr<RenderBufferTextures>> m_RBTexturesMap;

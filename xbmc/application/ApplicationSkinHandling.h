@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2005-2018 Team Kodi
+ *  Copyright (C) 2005-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -33,9 +33,9 @@ public:
 
   bool OnSettingChanged(const CSetting& setting);
   void ReloadSkin(bool confirm = false);
+  bool LoadSkin(const std::string& skinID);
 
 protected:
-  bool LoadSkin(const std::string& skinID);
   bool LoadCustomWindows();
 
   /*!
@@ -44,9 +44,18 @@ protected:
  */
   void ProcessSkin() const;
 
+  /*!
+   * \brief Run a skin reload that was deferred out of a nested render loop.
+   *
+   * Does nothing unless a reload is pending and the render loop has unwound.
+   */
+  void ProcessPendingSkinReload();
+
   bool m_saveSkinOnUnloading = true;
   bool m_confirmSkinChange = true;
   bool m_ignoreSkinSettingChanges = false;
+  bool m_pendingSkinReload = false;
+  bool m_pendingSkinReloadConfirm = false;
   IMsgTargetCallback* m_msgCb;
   IWindowManagerCallback* m_wCb;
   bool& m_bInitializing;

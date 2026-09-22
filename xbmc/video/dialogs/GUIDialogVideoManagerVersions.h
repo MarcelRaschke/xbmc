@@ -10,14 +10,17 @@
 
 #include "video/dialogs/GUIDialogVideoManager.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 
 class CFileItem;
 
 enum class VideoDbContentType;
 enum class VideoAssetType;
 enum class MediaRole;
+enum class VersionConversionResult : uint8_t;
 
 class CGUIDialogVideoManagerVersions : public CGUIDialogVideoManager
 {
@@ -27,7 +30,35 @@ public:
 
   void SetVideoAsset(const std::shared_ptr<CFileItem>& item) override;
 
-  static bool ProcessVideoVersion(VideoDbContentType itemType, int dbId);
+  /*!
+   * \brief Find a movie in the library similar to dbId and, if confirmed, convert dbId into an
+   * additional version of it.
+   * \param[in] itemType content type of dbId
+   * \param[in] dbId id of the movie to convert
+   * \param[in] targetDbId when >= 0, skip searching the library for a similar movie and
+   * reuse this movie id as the merge target instead - used to apply a merge decision already
+   * made for an earlier, related item (e.g. another bluray playlist on the same disc) without
+   * re-prompting for the same target.
+   * \param[in] canBecomeDefault when false, the version is added without becoming the default one,
+   * whatever the New Versions Are Default setting says - used for the second and subsequent
+   * playlists of a bluray, which would otherwise each displace the main one as the default
+   * \return a pair containing the result of the conversion and the id of the movie ends up attached to as a new version, -1 if not converted
+   */
+  static std::pair<VersionConversionResult, int> ProcessVideoVersion(VideoDbContentType itemType,
+                                                                     int dbId,
+                                                                     int targetDbId = -1,
+                                                                     bool canBecomeDefault = true);
+
+  /*!
+   * \brief Strip a trailing part/disc number from a movie's title, if present, and persist the
+   * change. Used when a movie ends up spanning several bluray playlists/discs or folders, where
+   * the number no longer makes sense as part of the (now shared) title.
+   * \param[in] dbId id of the movie
+   * \param[in] itemType content type of the movie
+   * \param[in] db database connection to use
+   */
+  static void RemovePartNumberFromTitle(int dbId, VideoDbContentType itemType, CVideoDatabase& db);
+
   /*!
    * \brief Open the Manage Versions dialog for a video
    * \param item video to manage
@@ -60,30 +91,77 @@ private:
    * \return true if a version was added, false otherwise.
    */
   bool AddVideoVersion();
+
+  /*!
+   * \brief Set as default button handler
+   */
   void SetDefault();
+
+  /*!
+   * \brief Ungroup button handler
+   */
+  void Ungroup();
+  bool UngroupImpl();
+
   void UpdateDefaultVideoVersionSelection();
+
+  enum class Mode
+  {
+    INTERACTIVE,
+    NON_INTERACTIVE,
+  };
 
   /*!
    * \brief Ask the user to choose an item from the list of items, the version type of the item,
    * and perform the version conversion according to the role parameter.
    * \param[in] items The items for the user to choose from
    * \param[in] itemType Type of the item being chosen
-   * \param[in] mediaType ?
    * \param[in] dbId id of the video being added if role is NewVersion, id of the video being added
    * to if role is Parent
    * \param[in] videoDb Database connection
    * \param[in] role NewVersion: dbId will be converted to a version of the movie chosen by
-   * the user from the whole library.
-   * Parent: dbId will have another movie chosen by the user from the whole library as a new version.
+   *                 the user from the whole library.
+   *                 Parent: dbId will have another movie chosen by the user from the whole library
+   *                 as a new version.
+   * \param[in] interaction INTERACTIVE: ask the user to choose and confirm as needed.
+   *                        NON_INTERACTIVE false: no user interaction allowed, use heuristics in
+   *                        place of user input
+   * \param[in] setDefaultVersion true to make the new version the default for the media
    *
-   * \return True: success, a version was created and attached, false otherwise.
+   * \return A pair containing the result of the conversion and the id of the movie ends up attached to as a new version, -1 if not converted
    */
-  static bool ChooseVideoAndConvertToVideoVersion(CFileItemList& items,
-                                                  VideoDbContentType itemType,
-                                                  const std::string& mediaType,
-                                                  int dbId,
-                                                  CVideoDatabase& videoDb,
-                                                  MediaRole role);
+  static std::pair<VersionConversionResult, int> ChooseVideoAndConvertToVideoVersion(
+      CFileItemList& items,
+      VideoDbContentType itemType,
+      int dbId,
+      CVideoDatabase& videoDb,
+      MediaRole role,
+      Mode mode,
+      bool setDefaultVersion);
+
+  /*!
+   * \brief Convert dbId into a new version of the already-chosen selectedItem: confirm (as
+   * needed), ask for the version type (as needed), and perform the conversion.
+   * \param[in] selectedItem the movie dbId is to become a version of (role NewVersion) or that is
+   * to become a version of dbId (role Parent)
+   * \param[in] itemType Type of the item being chosen
+   * \param[in] dbId id of the video being added if role is NewVersion, id of the video being
+   * added to if role is Parent
+   * \param[in] videoDb Database connection
+   * \param[in] role see ChooseVideoAndConvertToVideoVersion
+   * \param[in] mode see ChooseVideoAndConvertToVideoVersion
+   * \param[in] setDefaultVersion whether to set the new version as the default version
+   * \return A pair containing the result of the conversion and the id of the movie ends up attached to as a new version, -1 if not converted
+   */
+  static std::pair<VersionConversionResult, int> ConvertToVideoVersion(
+      const std::shared_ptr<CFileItem>& selectedItem,
+      VideoDbContentType itemType,
+      int dbId,
+      CVideoDatabase& videoDb,
+      MediaRole role,
+      Mode mode,
+      bool setDefaultVersion);
+
   /*!
    * \brief Use a file picker to select a file to add as a new version of a movie.
    * \return True when a version was added, false otherwise
@@ -124,9 +202,8 @@ private:
    * \brief Shared post processing of lists after extraction and before display
    * \param[in,out] list the list of movies
    * \param[in] dbId item to remove from the list
-   * \return True for success, false otherwise.
    */
-  static bool PostProcessList(CFileItemList& list, int dbId);
+  static void PostProcessList(CFileItemList& list, int dbId);
 
   /*!
    * \brief Prompts the user to choose a playlist from the current disc
@@ -136,8 +213,6 @@ private:
    */
   bool ChoosePlaylist(const std::shared_ptr<CFileItem>& item,
                       ReplaceExistingFile replaceExistingFile);
-
-  void RemovePartNumberFromTitle();
 
   std::shared_ptr<CFileItem> m_defaultVideoVersion;
 };

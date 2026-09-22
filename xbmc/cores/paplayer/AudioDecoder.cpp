@@ -34,6 +34,7 @@ CAudioDecoder::CAudioDecoder()
 
   m_status = STATUS_NO_FILE;
   m_canPlay = false;
+  m_startThresholdBytes = 0;
 
   // output buffer (for transferring data from the Pcm Buffer to the rest of the audio chain)
   memset(&m_outputBuffer, 0, OUTPUT_SAMPLES * sizeof(float));
@@ -62,7 +63,7 @@ void CAudioDecoder::Destroy()
   m_canPlay = false;
 }
 
-bool CAudioDecoder::Create(const CFileItem &file, int64_t seekOffset)
+bool CAudioDecoder::Create(const CFileItem& file, int64_t seekOffset, int streamIndex)
 {
   Destroy();
 
@@ -91,17 +92,13 @@ bool CAudioDecoder::Create(const CFileItem &file, int64_t seekOffset)
     Destroy();
     return false;
   }
-  unsigned int blockSize = (m_codec->m_bitsPerSample >> 3) * m_codec->m_format.m_channelLayout.Count();
+  // select the requested stream before buffer sizing (assumes Init() starts on stream 0)
+  m_streamIndex = 0;
+  if (streamIndex > 0 && streamIndex < m_codec->GetStreamCount() && m_codec->SetStream(streamIndex))
+    m_streamIndex = streamIndex;
 
-  if (blockSize == 0)
-  {
-    CLog::Log(LOGERROR, "CAudioDecoder: Codec provided invalid parameters ({}-bit, {} channels)",
-              m_codec->m_bitsPerSample, GetFormat().m_channelLayout.Count());
+  if (!CreatePcmBuffer())
     return false;
-  }
-
-  /* allocate the pcmBuffer for 2 seconds of audio */
-  m_pcmBuffer.Create(2 * blockSize * m_codec->m_format.m_sampleRate);
 
   if (file.HasMusicInfoTag())
   {
@@ -128,14 +125,51 @@ bool CAudioDecoder::Create(const CFileItem &file, int64_t seekOffset)
       m_codec->m_tag.SetReplayGain(rgInfo);
   }
 
-  if (seekOffset)
+  // Selecting a stream probes it, which consumes packets, so seek back
+  if (seekOffset || streamIndex > 0)
     m_codec->Seek(seekOffset);
+
+  UpdateStartThreshold();
 
   m_status = STATUS_QUEUING;
 
   m_rawBufferSize = 0;
 
   return true;
+}
+
+bool CAudioDecoder::CreatePcmBuffer()
+{
+  // Enough for two seconds of what is being decoded
+  constexpr unsigned int PCM_BUFFER_SECONDS = 2;
+
+  const unsigned int blockSize =
+      (m_codec->m_bitsPerSample >> 3) * m_codec->m_format.m_channelLayout.Count();
+  if (blockSize == 0)
+  {
+    CLog::Log(LOGERROR, "CAudioDecoder: Codec provided invalid parameters ({}-bit, {} channels)",
+              m_codec->m_bitsPerSample, m_codec->m_format.m_channelLayout.Count());
+    return false;
+  }
+
+  // CRingBuffer::Create() allocates without freeing what it is holding
+  m_pcmBuffer.Destroy();
+  m_pcmBuffer.Create(PCM_BUFFER_SECONDS * blockSize * m_codec->m_format.m_sampleRate);
+
+  return true;
+}
+
+void CAudioDecoder::UpdateStartThreshold()
+{
+  // Pre-compute the startup-buffer threshold, so that the per-packet recomputation in ReadSamples
+  // is not wasted work. 64-bit intermediate prevents wrap for extreme hi-res multichannel (see
+  // ReadSamples for the original sizing rationale).
+  constexpr unsigned int STARTUP_BUFFER_MS = 200;
+  m_startThresholdBytes = (static_cast<uint64_t>(STARTUP_BUFFER_MS) *
+                           static_cast<uint64_t>(m_codec->m_bitsPerSample >> 3) *
+                           static_cast<uint64_t>(m_codec->m_format.m_channelLayout.Count()) *
+                           static_cast<uint64_t>(m_codec->m_format.m_sampleRate)) /
+                          1000;
 }
 
 AEAudioFormat CAudioDecoder::GetFormat()
@@ -190,7 +224,15 @@ unsigned int CAudioDecoder::GetDataSize(bool checkPktSize)
       else if (checkPktSize && m_pcmBuffer.getMaxReadSize() < PACKET_SIZE)
         m_status = STATUS_ENDED;
     }
-    return std::min(m_pcmBuffer.getMaxReadSize() / (m_codec->m_bitsPerSample >> 3), (unsigned int)OUTPUT_SAMPLES);
+    const unsigned int bytesPerSample = m_codec->m_bitsPerSample >> 3;
+    if (bytesPerSample == 0)
+    {
+      CLog::Log(LOGERROR, "CAudioDecoder::GetDataSize - Codec reports {} bits per sample",
+                m_codec->m_bitsPerSample);
+      return 0;
+    }
+
+    return std::min(m_pcmBuffer.getMaxReadSize() / bytesPerSample, (unsigned int)OUTPUT_SAMPLES);
   }
   else
   {
@@ -274,8 +316,18 @@ int CAudioDecoder::ReadSamples(int numsamples)
         // move it into our buffer
         m_pcmBuffer.WriteData((char *)m_pcmInputBuffer, readSize);
 
-        // update status
-        if (m_status == STATUS_QUEUING && m_pcmBuffer.getMaxReadSize() > m_pcmBuffer.getSize() * 0.9)
+        // Declare queued once we have a fixed amount of decoded PCM ready.
+        // Time-based (not a percentage of the 2-s buffer) so startup latency is
+        // decoupled from buffer-capacity choices: enlarging the buffer for
+        // playback resilience does not silently increase the play-start delay.
+        // The original threshold required 90% of the 2-s buffer (~1.8 s of PCM)
+        // which on multichannel hi-res content (Atmos/TrueHD) over NFS at a
+        // chapter offset took ~4 s to fill. VideoPlayer has no equivalent
+        // threshold and starts on the first decoded frame; this brings PaPlayer
+        // closer to that feel without sacrificing the resilience the remaining
+        // buffer-fill provides during playback. Threshold is computed once in
+        // Create() since the contributing format values are immutable.
+        if (m_status == STATUS_QUEUING && m_pcmBuffer.getMaxReadSize() > m_startThresholdBytes)
         {
           CLog::Log(LOGINFO, "AudioDecoder: File is queued");
           m_status = STATUS_QUEUED;
@@ -348,53 +400,52 @@ bool CAudioDecoder::CanSeek()
 
 float CAudioDecoder::GetReplayGain(float &peakVal)
 {
-#define REPLAY_GAIN_DEFAULT_LEVEL 89.0f
   auto& components = CServiceBroker::GetAppComponents();
   const auto appVolume = components.GetComponent<CApplicationVolumeHandling>();
 
   const auto& replayGainSettings = appVolume->GetReplayGainSettings();
-  if (replayGainSettings.iType == ReplayGain::NONE)
+  if (replayGainSettings.m_type == ReplayGain::NONE)
     return 1.0f;
 
   // Compute amount of gain
-  float replaydB = (float)replayGainSettings.iNoGainPreAmp;
+  float replaydB = replayGainSettings.m_noGainPreAmp;
   float peak = 1.0f;
   const ReplayGain& rgInfo = m_codec->m_tag.GetReplayGain();
-  if (replayGainSettings.iType == ReplayGain::ALBUM)
+  if (replayGainSettings.m_type == ReplayGain::ALBUM)
   {
     if (rgInfo.Get(ReplayGain::ALBUM).HasGain())
     {
-      replaydB = (float)replayGainSettings.iPreAmp + rgInfo.Get(ReplayGain::ALBUM).Gain();
+      replaydB = replayGainSettings.m_preAmp + rgInfo.Get(ReplayGain::ALBUM).Gain();
       if (rgInfo.Get(ReplayGain::ALBUM).HasPeak())
         peak = rgInfo.Get(ReplayGain::ALBUM).Peak();
     }
     else if (rgInfo.Get(ReplayGain::TRACK).HasGain())
     {
-      replaydB = (float)replayGainSettings.iPreAmp + rgInfo.Get(ReplayGain::TRACK).Gain();
+      replaydB = replayGainSettings.m_preAmp + rgInfo.Get(ReplayGain::TRACK).Gain();
       if (rgInfo.Get(ReplayGain::TRACK).HasPeak())
         peak = rgInfo.Get(ReplayGain::TRACK).Peak();
     }
   }
-  else if (replayGainSettings.iType == ReplayGain::TRACK)
+  else if (replayGainSettings.m_type == ReplayGain::TRACK)
   {
     if (rgInfo.Get(ReplayGain::TRACK).HasGain())
     {
-      replaydB = (float)replayGainSettings.iPreAmp + rgInfo.Get(ReplayGain::TRACK).Gain();
+      replaydB = replayGainSettings.m_preAmp + rgInfo.Get(ReplayGain::TRACK).Gain();
       if (rgInfo.Get(ReplayGain::TRACK).HasPeak())
         peak = rgInfo.Get(ReplayGain::TRACK).Peak();
     }
     else if (rgInfo.Get(ReplayGain::ALBUM).HasGain())
     {
-      replaydB = (float)replayGainSettings.iPreAmp + rgInfo.Get(ReplayGain::ALBUM).Gain();
+      replaydB = replayGainSettings.m_preAmp + rgInfo.Get(ReplayGain::ALBUM).Gain();
       if (rgInfo.Get(ReplayGain::ALBUM).HasPeak())
         peak = rgInfo.Get(ReplayGain::ALBUM).Peak();
     }
   }
   // convert to a gain type
-  float replaygain = std::pow(10.0f, (replaydB - REPLAY_GAIN_DEFAULT_LEVEL) * 0.05f);
+  float replaygain = std::pow(10.0f, replaydB * 0.05f);
 
   CLog::Log(LOGDEBUG,
-            "AudioDecoder::GetReplayGain - Final Replaygain applied: {:f}, Track/Album Gain {:f}, "
+            "AudioDecoder::GetReplayGain - Final Replaygain applied: {:f} ({:.2f} dB), "
             "Peak {:f}",
             replaygain, replaydB, peak);
 
@@ -402,3 +453,66 @@ float CAudioDecoder::GetReplayGain(float &peakVal)
   return replaygain;
 }
 
+int CAudioDecoder::GetStreamCount() const
+{
+  std::unique_lock lock(m_critSection);
+  if (m_codec)
+    return m_codec->GetStreamCount();
+  return 0;
+}
+
+int CAudioDecoder::GetStreamIndex() const
+{
+  std::unique_lock lock(m_critSection);
+  return m_streamIndex;
+}
+
+bool CAudioDecoder::IsUsable() const
+{
+  std::unique_lock lock(m_critSection);
+
+  // A codec describing neither a rate nor a sample size has nothing to decode through - which is
+  // what one left behind by a failed stream switch reports.
+  return m_codec && m_codec->m_format.m_sampleRate != 0 && m_codec->m_bitsPerSample != 0;
+}
+
+bool CAudioDecoder::SetStream(int index)
+{
+  std::unique_lock lock(m_critSection);
+  if (!m_codec)
+    return false;
+
+  const int64_t totalTime = m_codec->m_TotalTime;
+
+  if (!m_codec->SetStream(index))
+  {
+    m_codec->m_TotalTime = totalTime;
+    return false;
+  }
+
+  m_codec->m_TotalTime = totalTime;
+
+  m_streamIndex = index;
+
+  // Reset for new stream
+  m_eof = false;
+  if (m_status == STATUS_ENDING || m_status == STATUS_ENDED)
+    m_status = STATUS_PLAYING;
+
+  m_rawBufferSize = 0;
+  if (!CreatePcmBuffer())
+    return false;
+
+  UpdateStartThreshold();
+
+  return true;
+}
+
+void CAudioDecoder::GetStreamInfo(int index, AudioStreamInfo& info) const
+{
+  std::unique_lock lock(m_critSection);
+  if (m_codec)
+    m_codec->GetStreamInfo(index, info);
+  else
+    info.valid = false;
+}

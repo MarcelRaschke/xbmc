@@ -15,8 +15,8 @@
 #include "Util.h"
 #include "cores/AudioEngine/Interfaces/AE.h"
 #include "cores/playercorefactory/PlayerCoreFactory.h"
-#include "dialogs/GUIDialogSimpleMenu.h"
 #include "filesystem/DirectoryFactory.h"
+#include "filesystem/DiscDirectoryHelper.h"
 #include "music/MusicFileItemClassify.h"
 #include "playlists/PlayList.h"
 #include "playlists/PlayListFileItemClassify.h"
@@ -80,8 +80,12 @@ bool GetEpisodeBookmark(const CFileItem& item, CPlayerOptions& options, CVideoDa
     {
       CBookmark bookmark;
       db.GetBookMarkForEpisode(*tag, bookmark);
-      options.starttime = bookmark.timeInSeconds;
       options.state = bookmark.playerState;
+
+      // Only apply starttime for non-local/LAN items where EDL parser won't run
+      if (!URIUtils::IsLocalOrLAN(item.GetDynPath()))
+        options.starttime = bookmark.timeInSeconds;
+
       return true;
     }
   }
@@ -114,17 +118,14 @@ void CApplicationPlay::GetOptionsAndUpdateItem()
       return;
 
     // Get path
-    std::string path{m_item.GetDynPath()};
+    std::string path{m_item.GetPath()};
     if (m_item.HasVideoInfoTag())
     {
       const std::string videoInfoTagPath{m_item.GetVideoInfoTag()->m_strFileNameAndPath};
-      if (!videoInfoTagPath.empty())
-      {
-        // removable:// may be embedded in bluray:// path
-        if (VIDEO::IsVideoDb(m_item) ||
-            CURL::Decode(videoInfoTagPath).find("removable://") != std::string::npos)
-          path = videoInfoTagPath;
-      }
+      // removable:// may be embedded in bluray:// path
+      if (CURL::Decode(videoInfoTagPath).find("removable://") != std::string::npos ||
+          VIDEO::IsVideoDb(m_item))
+        path = videoInfoTagPath;
     }
     else if (m_item.HasProperty("original_listitem_url") &&
              URIUtils::IsPlugin(m_item.GetProperty("original_listitem_url").asString()))
@@ -156,11 +157,17 @@ void CApplicationPlay::GetOptionsAndUpdateItem()
           m_options.starttime = bookmark.timeInSeconds;
           m_options.state = bookmark.playerState;
         }
-        else if (m_options.starttime == 0.0 && m_item.HasVideoInfoTag())
+        else if (m_options.starttime == 0.0)
           GetEpisodeBookmark(m_item, m_options, db);
       }
+
+      // No resume data found from any source — clear the stale resume request
+      // so downstream code (e.g. DVDInputStreamBluray::Open) doesn't attempt
+      // to resume from a non-existent state.
+      if (m_options.starttime == 0.0)
+        m_item.SetStartOffset(0);
     }
-    else if (m_item.HasVideoInfoTag())
+    else
       GetEpisodeBookmark(m_item, m_options, db);
 
     db.Close();
@@ -169,10 +176,11 @@ void CApplicationPlay::GetOptionsAndUpdateItem()
 
 namespace
 {
-bool IsSimpleMenuAllowed(const CFileItem& item,
-                         const std::string& player,
-                         const bool forceSelection)
+MenuDecision GetMenuDecisions(const CFileItem& item,
+                              const std::string& player,
+                              const CPlayerOptions& options)
 {
+  using enum MenuDecision;
   const CPlayerCoreFactory& playerCoreFactory{CServiceBroker::GetPlayerCoreFactory()};
   const std::string defaultPlayer{player.empty() ? playerCoreFactory.GetDefaultPlayer(item)
                                                  : player};
@@ -180,40 +188,86 @@ bool IsSimpleMenuAllowed(const CFileItem& item,
   // No video selection when using external or remote players (they handle it if supported)
   const bool isExternalPlayer{playerCoreFactory.IsExternalPlayer(defaultPlayer)};
   const bool isRemotePlayer{playerCoreFactory.IsRemotePlayer(defaultPlayer)};
+  if (isExternalPlayer || isRemotePlayer)
+    return NO_ACTION;
 
-  // Check if simple menu is enabled or if we are forced to select a playlist
-  const bool isSimpleMenu{forceSelection ||
-                          CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
-                              CSettings::SETTING_DISC_PLAYBACK) == BD_PLAYBACK_SIMPLE_MENU};
+  // See if disc image is a Blu-ray (as an image could be a DVD as well) or if the path is a BDMV folder
+  const bool isBluray{::UTILS::DISCS::IsBlurayDiscImage(item) ||
+                      URIUtils::IsBDFile(item.GetDynPath())};
 
-  return !isExternalPlayer && !isRemotePlayer && isSimpleMenu;
+  // If already a bluray:// path then playlist selection may not be needed
+  // Unless overridden by context menu 'Choose Playlist' or 'Simple Menu' in settings
+  const bool isBlurayPath{URIUtils::IsBlurayPath(item.GetDynPath())};
+
+  const int playbackSetting{CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+      CSettings::SETTING_DISC_PLAYBACK)};
+  const bool atStart{options.startpercent == 0.0 && options.starttime == 0.0};
+
+  // See if choose (new) playlist has been selected from context menu
+  const bool forceSelectionAlways{item.GetProperty("force_playlist_selection").asBoolean(false)};
+
+  // If we already have a playlist but Choose Playlist has been selected on the context menu
+  if (forceSelectionAlways && isBlurayPath)
+    return SHOW_SIMPLE_MENU;
+
+  // Show Disc menu
+  // This takes priority over the simple menu
+  const bool useDiscMenuSetting{playbackSetting == BD_PLAYBACK_DISC_MENU};
+  if ((isBluray || isBlurayPath) && atStart && useDiscMenuSetting)
+    return SHOW_DISC_MENU;
+
+  // Select main title
+  const bool useMainTitleSetting{playbackSetting == BD_PLAYBACK_MAIN_TITLE};
+  if ((isBluray || isBlurayPath) && atStart && useMainTitleSetting)
+    return GET_MAIN_TITLE;
+
+  const bool forceSelectionAtStart{playbackSetting == BD_PLAYBACK_SIMPLE_MENU};
+  const bool mainTitle{playbackSetting == BD_PLAYBACK_MAIN_TITLE};
+
+  // Show simple menu:
+  // If we don't have a playlist (ie. ISO or BDMV) and we're at the start
+  if (isBluray && atStart && !mainTitle)
+    return SHOW_SIMPLE_MENU;
+
+  // If we already have a playlist but we're at the start and simple menu is enabled in settings
+  if (forceSelectionAtStart && isBlurayPath && atStart)
+    return SHOW_SIMPLE_MENU;
+
+  return NO_ACTION;
 }
 } // namespace
 
 bool CApplicationPlay::GetPlaylistIfDisc()
 {
-  // See if disc image is a Blu-ray (as an image could be a DVD as well) or if the path is a BDMV folder
-  const bool isBluray{::UTILS::DISCS::IsBlurayDiscImage(m_item) ||
-                      URIUtils::IsBDFile(m_item.GetDynPath())};
-
-  // See if choose (new) playlist has been selected from context menu
-  const bool forceSelection{m_item.GetProperty("force_playlist_selection").asBoolean(false)};
-  const bool forceBlurayPlaylistSelection{forceSelection &&
-                                          URIUtils::IsBlurayPath(m_item.GetDynPath())};
-
-  if (((isBluray && !(m_options.startpercent > 0.0 || m_options.starttime > 0.0)) ||
-       forceBlurayPlaylistSelection) &&
-      IsSimpleMenuAllowed(m_item, m_player, forceSelection))
+  using enum MenuDecision;
+  switch (MenuDecision menuDecision{GetMenuDecisions(m_item, m_player, m_options)}; menuDecision)
   {
-    if (!CGUIDialogSimpleMenu::ShowPlaylistSelection(m_item))
-      return false;
+    case SHOW_DISC_MENU:
+    {
+      // Generate a bluray:// menu path
+      m_item.SetDynPath(URIUtils::GetBlurayMenuPath(m_item.GetDynPath()));
+      break;
+    }
+    case SHOW_SIMPLE_MENU:
+    case GET_MAIN_TITLE:
+    case SILENT:
+    {
+      // Select playlist, showing simple menu if needed
+      CFileItemList items;
+      if (!CDiscDirectoryHelper::GetOrShowPlaylistSelection(m_item, items, menuDecision) ||
+          items.IsEmpty())
+        return false; // User cancelled
+      m_item = *items[0];
 
-    // Reset any resume state as new playlist chosen
-    m_options.starttime = m_options.startpercent = 0.0;
-    m_options.state = {};
-    m_item.ClearProperty("force_playlist_selection");
+      // Reset any resume state as new playlist chosen
+      m_options.starttime = m_options.startpercent = 0.0;
+      m_options.state = {};
+      m_item.ClearProperty("force_playlist_selection");
+      break;
+    }
+    case NO_ACTION:
+      break;
   }
-
   return true;
 }
 
@@ -301,8 +355,8 @@ CApplicationPlay::GatherPlaybackDetailsResult CApplicationPlay::GatherPlaybackDe
   if (VIDEO::IsDiscStub(m_item))
     return GatherPlaybackDetailsResult::RESULT_SUCCESS; // all done
 
-  if (PLAYLIST::IsPlayList(m_item))
-    return GatherPlaybackDetailsResult::RESULT_ERROR; // playlists not supported
+  if (PLAYLIST::IsPlayList(m_item) && !m_item.IsGame())
+    return GatherPlaybackDetailsResult::RESULT_ERROR; // non-game playlists not supported
 
   if (!ResolvePath())
     return GatherPlaybackDetailsResult::RESULT_ERROR;

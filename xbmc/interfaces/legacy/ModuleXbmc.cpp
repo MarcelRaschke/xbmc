@@ -11,6 +11,7 @@
 #include "ModuleXbmc.h"
 
 #include "AddonUtils.h"
+#include "DatabaseManager.h"
 #include "FileItem.h"
 #include "GUIInfoManager.h"
 #include "LangInfo.h"
@@ -29,6 +30,7 @@
 #include "messaging/ApplicationMessenger.h"
 #include "network/Network.h"
 #include "network/NetworkServices.h"
+#include "peripherals/Peripherals.h"
 #include "playlists/PlayListTypes.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
@@ -42,6 +44,7 @@
 #include "utils/FileExtensionProvider.h"
 #include "utils/FileUtils.h"
 #include "utils/LangCodeExpander.h"
+#include "utils/LanguageTag.h"
 #include "utils/MemUtils.h"
 #include "utils/StringUtils.h"
 #include "utils/SystemInfo.h"
@@ -60,6 +63,7 @@ namespace XBMCAddon
     /*****************************************************************
      * start of xbmc methods
      *****************************************************************/
+
     void log(const char* msg, int level)
     {
       // check for a valid loglevel
@@ -188,50 +192,16 @@ namespace XBMCAddon
     String getLanguage(int format /* = CLangCodeExpander::ENGLISH_NAME */, bool region /*= false*/)
     {
       XBMC_TRACE;
-      std::string lang = g_langInfo.GetEnglishLanguageName();
-
       switch (format)
       {
-      case CLangCodeExpander::ENGLISH_NAME:
-        {
-          if (region)
-          {
-            std::string region = "-" + g_langInfo.GetCurrentRegion();
-            return (lang += region);
-          }
-          return lang;
-        }
-      case CLangCodeExpander::ISO_639_1:
-        {
-          std::string langCode;
-          g_LangCodeExpander.ConvertToISO6391(lang, langCode);
-          if (region)
-          {
-            std::string region = g_langInfo.GetRegionLocale();
-            std::string region2Code;
-            g_LangCodeExpander.ConvertToISO6391(region, region2Code);
-            region2Code = "-" + region2Code;
-            return (langCode += region2Code);
-          }
-          return langCode;
-        }
-      case CLangCodeExpander::ISO_639_2:
-        {
-          std::string langCode;
-          g_LangCodeExpander.ConvertToISO6392B(lang, langCode);
-          if (region)
-          {
-            std::string region = g_langInfo.GetRegionLocale();
-            std::string region3Code;
-            g_LangCodeExpander.ConvertToISO6392B(region, region3Code);
-            region3Code = "-" + region3Code;
-            return (langCode += region3Code);
-          }
-
-          return langCode;
-        }
-      default:
-        return "";
+        case CLangCodeExpander::ENGLISH_NAME:
+        case CLangCodeExpander::ISO_NAME:
+        case CLangCodeExpander::ISO_639_1:
+        case CLangCodeExpander::ISO_639_2:
+          return g_langInfo.GetLanguageAs(static_cast<CLangCodeExpander::LANGFORMATS>(format),
+                                          region);
+        default:
+          return "";
       }
     }
 
@@ -327,6 +297,18 @@ namespace XBMCAddon
       return infoMgr.GetImage(ret, WINDOW_INVALID);
     }
 
+    String getDatabaseName(const char* dbType)
+    {
+      XBMC_TRACE;
+      if (!dbType)
+      {
+        String ret;
+        return ret;
+      }
+
+      return CServiceBroker::GetDatabaseManager().GetDatabaseNameByType(dbType);
+    }
+
     void playSFX(const char* filename, bool useCached)
     {
       XBMC_TRACE;
@@ -382,6 +364,21 @@ namespace XBMCAddon
       auto& components = CServiceBroker::GetAppComponents();
       const auto appPower = components.GetComponent<CApplicationPowerHandling>();
       return appPower->GlobalIdleTime();
+    }
+
+    int getDevicePowerStatus(const String& adapterName /* = emptyString */)
+    {
+      XBMC_TRACE;
+      // libCEC may block briefly on a CEC bus request when its cache is stale,
+      // so release the GIL for the duration of the call.
+      DelayedCallGuard dg;
+      return static_cast<int>(CServiceBroker::GetPeripherals().GetDevicePowerStatus(adapterName));
+    }
+
+    std::vector<String> getCecAdapterNames()
+    {
+      XBMC_TRACE;
+      return CServiceBroker::GetPeripherals().GetCecAdapterNames();
     }
 
     String getCacheThumbName(const String& path)
@@ -526,20 +523,26 @@ namespace XBMCAddon
       {
       case CLangCodeExpander::ENGLISH_NAME:
         {
-          g_LangCodeExpander.Lookup(language, convertedLanguage);
+          CLangCodeExpander::Lookup(language, convertedLanguage);
           // maybe it's a check whether the language exists or not
           if (convertedLanguage.empty())
           {
-            g_LangCodeExpander.ConvertToISO6392B(language, convertedLanguage);
-            g_LangCodeExpander.Lookup(convertedLanguage, convertedLanguage);
+            CLangCodeExpander::ConvertToISO6392B(language, convertedLanguage);
+            CLangCodeExpander::Lookup(convertedLanguage, convertedLanguage);
           }
           break;
         }
       case CLangCodeExpander::ISO_639_1:
-        g_LangCodeExpander.ConvertToISO6391(language, convertedLanguage);
+        if (const auto tag = KODI::UTILS::CLanguageTag::TryParse(language); tag.has_value())
+          convertedLanguage = tag->AsIso6391();
         break;
       case CLangCodeExpander::ISO_639_2:
-        g_LangCodeExpander.ConvertToISO6392B(language, convertedLanguage);
+        if (const auto tag = KODI::UTILS::CLanguageTag::TryParse(language); tag.has_value())
+          convertedLanguage = tag->AsIso6392B();
+        break;
+      case CLangCodeExpander::ISO_NAME:
+        if (const auto tag = KODI::UTILS::CLanguageTag::TryParse(language); tag.has_value())
+          convertedLanguage = tag->GetEnglishLanguageName();
         break;
       default:
         return "";
@@ -616,6 +619,36 @@ namespace XBMCAddon
     int getISO_639_1() { return CLangCodeExpander::ISO_639_1; }
     int getISO_639_2(){ return CLangCodeExpander::ISO_639_2; }
     int getENGLISH_NAME() { return CLangCodeExpander::ENGLISH_NAME; }
+    int getISO_NAME()
+    {
+      return CLangCodeExpander::ISO_NAME;
+    }
+
+    // Device power status (HDMI-CEC)
+    int getDEVICE_POWER_NO_ADAPTER()
+    {
+      return static_cast<int>(PERIPHERALS::CecPowerStatus::NO_ADAPTER);
+    }
+    int getDEVICE_POWER_ON()
+    {
+      return static_cast<int>(PERIPHERALS::CecPowerStatus::ON);
+    }
+    int getDEVICE_POWER_STANDBY()
+    {
+      return static_cast<int>(PERIPHERALS::CecPowerStatus::STANDBY);
+    }
+    int getDEVICE_POWER_TRANSITION_TO_ON()
+    {
+      return static_cast<int>(PERIPHERALS::CecPowerStatus::TRANSITION_TO_ON);
+    }
+    int getDEVICE_POWER_TRANSITION_TO_STANDBY()
+    {
+      return static_cast<int>(PERIPHERALS::CecPowerStatus::TRANSITION_TO_STANDBY);
+    }
+    int getDEVICE_POWER_UNKNOWN()
+    {
+      return static_cast<int>(PERIPHERALS::CecPowerStatus::UNKNOWN);
+    }
 
     const int lLOGDEBUG = LOGDEBUG;
   }

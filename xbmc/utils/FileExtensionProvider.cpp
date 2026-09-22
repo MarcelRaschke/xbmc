@@ -20,6 +20,7 @@
 #include "settings/SettingsComponent.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
+#include "utils/log.h"
 
 #include <array>
 #include <functional>
@@ -33,62 +34,121 @@ using namespace KODI::ADDONS;
 
 constexpr std::array ADDON_TYPES{AddonType::VFS, AddonType::IMAGEDECODER, AddonType::AUDIODECODER};
 
-CFileExtensionProvider::CFileExtensionProvider(ADDON::CAddonMgr& addonManager)
-  : m_advancedSettings(CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()),
-    m_addonManager(addonManager)
+void CFileExtensionProvider::Initialize(ADDON::CAddonMgr& addonManager)
 {
+  m_addonManager = &addonManager;
+
+  m_advancedSettings = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+  if (!m_advancedSettings)
+    m_advancedSettings = std::make_shared<CAdvancedSettings>();
+
   SetAddonExtensions();
 
-  m_addonManager.Events().Subscribe(this,
-                                    [this](const AddonEvent& event)
-                                    {
-                                      if (typeid(event) == typeid(AddonEvents::Enabled) ||
-                                          typeid(event) == typeid(AddonEvents::Disabled) ||
-                                          typeid(event) == typeid(AddonEvents::ReInstalled))
-                                      {
-                                        for (auto& type : ADDON_TYPES)
-                                        {
-                                          if (m_addonManager.HasType(event.addonId, type))
-                                          {
-                                            std::lock_guard lock{m_critSection};
-                                            SetAddonExtensions(type);
-                                            break;
-                                          }
-                                        }
-                                      }
-                                      else if (typeid(event) == typeid(AddonEvents::UnInstalled))
-                                      {
-                                        std::lock_guard lock{m_critSection};
-                                        SetAddonExtensions();
-                                      }
-                                    });
+  m_addonManager->Events().Subscribe(this,
+                                     [this](const AddonEvent& event)
+                                     {
+                                       if (typeid(event) == typeid(AddonEvents::Enabled) ||
+                                           typeid(event) == typeid(AddonEvents::Disabled) ||
+                                           typeid(event) == typeid(AddonEvents::ReInstalled))
+                                       {
+                                         for (auto& type : ADDON_TYPES)
+                                         {
+                                           if (m_addonManager->HasType(event.addonId, type))
+                                           {
+                                             std::lock_guard lock{m_critSection};
+                                             SetAddonExtensions(type);
+                                             break;
+                                           }
+                                         }
+                                       }
+                                       else if (typeid(event) == typeid(AddonEvents::UnInstalled))
+                                       {
+                                         std::lock_guard lock{m_critSection};
+                                         SetAddonExtensions();
+                                       }
+                                     });
 
   m_callbackId =
       m_advancedSettings->RegisterSettingsLoadedCallback([this]() { OnAdvancedSettingsLoaded(); });
+
+  m_initialized = true;
 }
 
 CFileExtensionProvider::~CFileExtensionProvider()
 {
+  Deinitialize();
+}
+
+void CFileExtensionProvider::Deinitialize()
+{
+  if (!m_initialized)
+    return;
+
   if (m_callbackId.has_value())
+  {
     m_advancedSettings->UnregisterSettingsLoadedCallback(m_callbackId.value());
+    m_callbackId.reset();
+  }
 
-  m_addonManager.Events().Unsubscribe(this);
+  if (m_addonManager != nullptr)
+  {
+    m_addonManager->Events().Unsubscribe(this);
+    m_addonManager = nullptr;
+  }
 
+  // Lock needed against a concurrent getter
+  std::lock_guard lock{m_critSection};
+
+  m_initialized = false;
   m_advancedSettings.reset();
   m_addonExtensions.clear();
+  m_addonFileFolderExtensions.clear();
+
+  // Deinitialization drops all lists
+  ReleaseSettingsDerivedLists();
+  std::atomic_store(&m_fileFolderExtensions, {});
+}
+
+void CFileExtensionProvider::ReleaseSettingsDerivedLists()
+{
+  std::atomic_store(&m_discStubExtensions, {});
+  std::atomic_store(&m_musicExtensions, {});
+  std::atomic_store(&m_pictureExtensions, {});
+  std::atomic_store(&m_subtitlesExtensions, {});
+  std::atomic_store(&m_videoExtensions, {});
+  std::atomic_store(&m_archiveExtensions, {});
+  std::atomic_store(&m_compoundArchiveExtensions, {});
 }
 
 namespace
 {
-std::string GetExtensions(CCriticalSection& mutex,
+std::string NotInitialized()
+{
+  // The provider can be read before the logging service exists and after it has gone.
+  if (CServiceBroker::IsLoggingUp())
+    CLog::Log(LOGWARNING, "CFileExtensionProvider: extension list requested before initialization "
+                          "or after deinitialization");
+  return {};
+}
+
+std::string GetExtensions(const std::atomic<bool>& initialized,
+                          CCriticalSection& mutex,
                           std::shared_ptr<const std::string>& cache,
                           std::function<std::string()> newlist)
 {
+  if (!initialized)
+    return NotInitialized();
+
   // Double-checked locking - first check
   auto tmp = std::atomic_load_explicit(&cache, std::memory_order_acquire);
   if (tmp == nullptr)
   {
     std::lock_guard lock{mutex};
+
+    // Deinitialize drops the settings the list is built from under this lock, so the check is
+    // repeated once it is held: passing it unlocked above proves nothing by now.
+    if (!initialized)
+      return NotInitialized();
 
     // Second check for threads that saw nullptr but were held by the lock
     // (another thread performed the update)
@@ -105,13 +165,13 @@ std::string GetExtensions(CCriticalSection& mutex,
 
 std::string CFileExtensionProvider::GetDiscStubExtensions() const
 {
-  return GetExtensions(m_critSection, m_discStubExtensions,
+  return GetExtensions(m_initialized, m_critSection, m_discStubExtensions,
                        [this]() { return m_advancedSettings->m_discStubExtensions; });
 }
 
 std::string CFileExtensionProvider::GetMusicExtensions() const
 {
-  return GetExtensions(m_critSection, m_musicExtensions,
+  return GetExtensions(m_initialized, m_critSection, m_musicExtensions,
                        [this]()
                        {
                          return m_advancedSettings->m_musicExtensions + '|' +
@@ -122,7 +182,7 @@ std::string CFileExtensionProvider::GetMusicExtensions() const
 
 std::string CFileExtensionProvider::GetPictureExtensions() const
 {
-  return GetExtensions(m_critSection, m_pictureExtensions,
+  return GetExtensions(m_initialized, m_critSection, m_pictureExtensions,
                        [this]()
                        {
                          return m_advancedSettings->m_pictureExtensions + '|' +
@@ -133,8 +193,9 @@ std::string CFileExtensionProvider::GetPictureExtensions() const
 
 std::string CFileExtensionProvider::GetSubtitleExtensions() const
 {
-  return GetExtensions(m_critSection, m_subtitlesExtensions,
-                       [this]() {
+  return GetExtensions(m_initialized, m_critSection, m_subtitlesExtensions,
+                       [this]()
+                       {
                          return m_advancedSettings->m_subtitlesExtensions + '|' +
                                 GetAddonExtensions(AddonType::VFS);
                        });
@@ -142,7 +203,7 @@ std::string CFileExtensionProvider::GetSubtitleExtensions() const
 
 std::string CFileExtensionProvider::GetVideoExtensions() const
 {
-  return GetExtensions(m_critSection, m_videoExtensions,
+  return GetExtensions(m_initialized, m_critSection, m_videoExtensions,
                        [this]()
                        {
                          std::string extensions(m_advancedSettings->m_videoExtensions);
@@ -191,7 +252,7 @@ std::string GetCompoundExtensions(std::string_view extensions)
 
 std::string CFileExtensionProvider::GetArchiveExtensions() const
 {
-  return GetExtensions(m_critSection, m_archiveExtensions,
+  return GetExtensions(m_initialized, m_critSection, m_archiveExtensions,
                        [this]()
                        {
                          return m_advancedSettings->m_archiveExtensions + '|' +
@@ -201,7 +262,7 @@ std::string CFileExtensionProvider::GetArchiveExtensions() const
 
 std::string CFileExtensionProvider::GetCompoundArchiveExtensions() const
 {
-  return GetExtensions(m_critSection, m_compoundArchiveExtensions,
+  return GetExtensions(m_initialized, m_critSection, m_compoundArchiveExtensions,
                        [this]()
                        {
                          return m_advancedSettings->m_compoundArchiveExtensions + '|' +
@@ -211,7 +272,7 @@ std::string CFileExtensionProvider::GetCompoundArchiveExtensions() const
 
 std::string CFileExtensionProvider::GetFileFolderExtensions() const
 {
-  return GetExtensions(m_critSection, m_fileFolderExtensions,
+  return GetExtensions(m_initialized, m_critSection, m_fileFolderExtensions,
                        [this]()
                        {
                          std::string extensions(GetAddonFileFolderExtensions(AddonType::VFS));
@@ -341,7 +402,10 @@ void CFileExtensionProvider::SetAddonExtensions(AddonType type)
   else if (type == AddonType::VFS)
   {
     std::vector<AddonInfoPtr> addonInfos;
-    m_addonManager.GetAddonInfos(addonInfos, true, type);
+
+    if (m_addonManager != nullptr)
+      m_addonManager->GetAddonInfos(addonInfos, true, type);
+
     for (const auto& addonInfo : addonInfos)
     {
       std::string ext = addonInfo->Type(type)->GetValue("@extensions").asString();
@@ -374,6 +438,24 @@ void CFileExtensionProvider::SetAddonExtensions(AddonType type)
   m_addonFileFolderExtensions[type] = StringUtils::Join(fileFolderExtensions, "|");
 }
 
+void CFileExtensionProvider::RegisterGameExtensions(const std::set<std::string>& extensions)
+{
+  std::lock_guard lock{m_critSection};
+  m_gameExtensions.insert(extensions.begin(), extensions.end());
+}
+
+void CFileExtensionProvider::UnregisterGameExtensions(const std::set<std::string>& extensions)
+{
+  std::lock_guard lock{m_critSection};
+  for (const auto& ext : extensions)
+    m_gameExtensions.erase(ext);
+}
+
+std::string CFileExtensionProvider::GetGameExtensions() const
+{
+  return StringUtils::Join(m_gameExtensions, "|");
+}
+
 bool CFileExtensionProvider::EncodedHostName(const std::string& protocol) const
 {
   std::lock_guard lock{m_critSection};
@@ -383,11 +465,8 @@ bool CFileExtensionProvider::EncodedHostName(const std::string& protocol) const
 
 void CFileExtensionProvider::OnAdvancedSettingsLoaded()
 {
-  std::atomic_store(&m_discStubExtensions, {});
-  std::atomic_store(&m_musicExtensions, {});
-  std::atomic_store(&m_pictureExtensions, {});
-  std::atomic_store(&m_subtitlesExtensions, {});
-  std::atomic_store(&m_videoExtensions, {});
-  std::atomic_store(&m_archiveExtensions, {});
-  std::atomic_store(&m_compoundArchiveExtensions, {});
+  // Avoid lost invalidation for a nullptr list built at the same time
+  std::lock_guard lock{m_critSection};
+  // m_fileFolderExtensions is built from the add-ons alone, so a settings reload keeps it.
+  ReleaseSettingsDerivedLists();
 }

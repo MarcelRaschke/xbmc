@@ -57,12 +57,15 @@ public class Splash extends Activity
   private static final int CheckExternalStorage = 12;
   private static final int RecordAudioPermission = 13;
   private static final int RecordAudioInfo = 14;
+  private static final int AccessLocalNetworkPermission = 15;
+  private static final int AccessLocalNetworkInfo = 16;
   private static final int StartingXBMC = 99;
 
   private static final String TAG = "@APP_NAME@";
 
   private static final int RECORDAUDIO_RESULT_CODE = 8946;
   private static final int PERMISSION_RESULT_CODE = 8947;
+  private static final int LOCAL_NETWORK_RESULT_CODE = 8948;
 
   private String mErrorMsg = "";
 
@@ -76,11 +79,15 @@ public class Splash extends Activity
   private String sXbmcHome = "";
   private File fPackagePath = null;
   private File fXbmcHome = null;
+  private File fCacheStamp = null;
 
   private BroadcastReceiver mExternalStorageReceiver = null;
   private boolean mExternalStorageChecked = false;
   private boolean mCachingDone = false;
   private boolean mPermissionOK = false;
+  // Runs every unpack on one worker, so a Splash re-created mid-unpack queues
+  // behind the running one and cannot delete the tree it is filling.
+  private static final ExecutorService sCacheExecutor = Executors.newSingleThreadExecutor();
 
   private class StateMachine extends Handler
   {
@@ -110,7 +117,14 @@ public class Splash extends Activity
           break;
         case RecordAudioPermission:
           requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO},
-                  RECORDAUDIO_RESULT_CODE);
+                             RECORDAUDIO_RESULT_CODE);
+          break;
+        case AccessLocalNetworkInfo:
+          showInfoDialog(getString(R.string.networkperm_dialog, "@APP_NAME@"), AccessLocalNetworkPermission);
+          break;
+        case AccessLocalNetworkPermission:
+          requestPermissions(new String[]{Manifest.permission.ACCESS_LOCAL_NETWORK},
+                             LOCAL_NETWORK_RESULT_CODE);
           break;
         case CheckingPermissions:
           if (Build.VERSION.SDK_INT >= 33 || (Build.VERSION.SDK_INT >= 30 && !isAndroidTV()))
@@ -189,7 +203,7 @@ public class Splash extends Activity
             {
               sendEmptyMessage(InError);
             }
-            if (fXbmcHome.exists() && fXbmcHome.lastModified() >= fPackagePath.lastModified())
+            if (isCacheUpToDate())
             {
               mState = CachingDone;
               mCachingDone = true;
@@ -220,19 +234,17 @@ public class Splash extends Activity
   {
     private final Splash mSplash;
     private int mProgressStatus = 0;
-    private final ExecutorService executor;
     private final Handler handler;
 
     public FillCache(Splash splash)
     {
       mSplash = splash;
-      executor = Executors.newSingleThreadExecutor();
       handler = new Handler(Looper.getMainLooper());
     }
 
     public void execute()
     {
-      executor.execute(() -> {
+      sCacheExecutor.execute(() -> {
         Integer result = doInBackground();
         handler.post(() -> onPostExecute(result));
       });
@@ -257,6 +269,12 @@ public class Splash extends Activity
 
     protected Integer doInBackground()
     {
+      if (isCacheUpToDate())
+      {
+        mState = CachingDone;
+        publishProgress(0);
+        return 0;
+      }
       if (fXbmcHome.exists())
       {
         // Remove existing files
@@ -269,12 +287,10 @@ public class Splash extends Activity
       Log.d(TAG, "apk: " + sPackagePath);
       Log.d(TAG, "output: " + sXbmcHome);
 
-      ZipFile zip;
       byte[] buf = new byte[4096];
       int n;
-      try
+      try (ZipFile zip = new ZipFile(sPackagePath))
       {
-        zip = new ZipFile(sPackagePath);
         Enumeration<? extends ZipEntry> entries = zip.entries();
         mProgress.setProgress(0);
         mProgress.setMax(zip.size());
@@ -315,26 +331,19 @@ public class Splash extends Activity
           if (parent != null && !parent.exists())
             parent.mkdirs();
 
-          try
+          try (InputStream in = zip.getInputStream(e);
+               FileOutputStream out = new FileOutputStream(sFullPath))
           {
-            InputStream in = zip.getInputStream(e);
-            FileOutputStream out = new FileOutputStream(sFullPath);
             while ((n = in.read(buf)) > 0)
               out.write(buf, 0, n);
-
-            in.close();
-            out.close();
           }
           catch (IOException e1)
           {
             Log.e(TAG, "Exception: " + e1.getMessage());
+            mErrorMsg = getString(R.string.no_write_cache);
+            return -1;
           }
         }
-
-        zip.close();
-
-        fXbmcHome.setLastModified(fPackagePath.lastModified());
-
       }
       catch (FileNotFoundException e1)
       {
@@ -350,6 +359,21 @@ public class Splash extends Activity
         obb.delete();
         return -1;
       }
+
+      // A failure here must not be treated as a corrupt APK (that would delete
+      // the package), so this is a separate try/catch from the unzip loop above.
+      try
+      {
+        new FileOutputStream(fCacheStamp).close();
+      }
+      catch (IOException e)
+      {
+        Log.e(TAG, "Exception: " + e.getMessage());
+        mErrorMsg = getString(R.string.no_write_cache);
+        return -1;
+      }
+      if (!fCacheStamp.setLastModified(fPackagePath.lastModified()))
+        Log.w(TAG, "Could not set the timestamp of " + fCacheStamp);
 
       mState = CachingDone;
       publishProgress(0);
@@ -374,12 +398,7 @@ public class Splash extends Activity
 
     protected void onPostExecute(Integer result)
     {
-      if (result < 0)
-      {
-        mState = InError;
-      }
-
-      mStateMachine.sendEmptyMessage(mState);
+      mStateMachine.sendEmptyMessage(result < 0 ? InError : CachingDone);
     }
   }
 
@@ -422,6 +441,14 @@ public class Splash extends Activity
     dialog.show();
   }
 
+  // Written by FillCache after the last entry, so a tree an unpack is still
+  // filling, or one a crash cut short, never counts as current.
+  private boolean isCacheUpToDate()
+  {
+    return fCacheStamp != null && fCacheStamp.exists() &&
+           fCacheStamp.lastModified() >= fPackagePath.lastModified();
+  }
+
   private void SetupEnvironment()
   {
     sXbmcHome = XBMCProperties.getStringProperty("xbmc.home", "");
@@ -448,12 +475,13 @@ public class Splash extends Activity
         sXbmcHome = "";
       }
     }
-    File fCacheDir = getCacheDir();
+    File fCacheDir = getFilesDir();
     if (sXbmcHome.isEmpty())
     {
       sXbmcHome = fCacheDir.getAbsolutePath() + "/apk";
       fXbmcHome = new File(sXbmcHome);
     }
+    fCacheStamp = new File(fXbmcHome, ".unpacked");
     File fLibCache = new File(fCacheDir.getAbsolutePath() + "/lib");
     fLibCache.mkdirs();
 
@@ -528,6 +556,18 @@ public class Splash extends Activity
       if (permissionCheck == PERMISSION_GRANTED)
         retVal = true;
     }
+
+    if (Build.VERSION.SDK_INT >= 37)
+    {
+      int permissionCheck;
+      permissionCheck = checkSelfPermission(Manifest.permission.ACCESS_LOCAL_NETWORK);
+      if (permissionCheck == PERMISSION_GRANTED)
+      {
+        retVal &= true;
+      } else {
+        retVal = false;
+      }
+    }
     return retVal;
   }
 
@@ -549,7 +589,27 @@ public class Splash extends Activity
       }
       case RECORDAUDIO_RESULT_CODE:
       {
-        mStateMachine.sendEmptyMessage(CheckingPermissionsDone);
+        // ACCESS_LOCAL_NETWORK manifest permission checks from SDK37+
+        if (Build.VERSION.SDK_INT >= 37) {
+          mStateMachine.sendEmptyMessage(AccessLocalNetworkInfo);
+        } else {
+          mStateMachine.sendEmptyMessage(CheckingPermissionsDone);
+        }
+        break;
+      }
+      case LOCAL_NETWORK_RESULT_CODE:
+      {
+        int permissionCheck;
+        permissionCheck = checkSelfPermission(Manifest.permission.ACCESS_LOCAL_NETWORK);
+        if (permissionCheck == PERMISSION_GRANTED) {
+          mPermissionOK &= true;
+          mStateMachine.sendEmptyMessage(CheckingPermissionsDone);
+        } else {
+          mPermissionOK = false;
+          mErrorMsg = getString(R.string.permission_denied);
+          mStateMachine.sendEmptyMessage(InError);
+        }
+        break;
       }
     }
   }
@@ -565,6 +625,13 @@ public class Splash extends Activity
         mPermissionOK = true;
       }
       mStateMachine.sendEmptyMessage(RecordAudioInfo);
+    }
+    else if (requestCode == RECORDAUDIO_RESULT_CODE)
+    {
+      if (Build.VERSION.SDK_INT >= 37)
+      {
+        mStateMachine.sendEmptyMessage(AccessLocalNetworkInfo);
+      }
     }
   }
 
@@ -656,7 +723,7 @@ public class Splash extends Activity
 
         SetupEnvironment();
 
-        if (mState != InError && fXbmcHome.exists() && fXbmcHome.lastModified() >= fPackagePath.lastModified())
+        if (mState != InError && isCacheUpToDate())
         {
           mState = CachingDone;
           mCachingDone = true;

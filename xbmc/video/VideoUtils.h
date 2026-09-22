@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2022 Team Kodi
+ *  Copyright (C) 2022-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "utils/RegExp.h"
 #include "video/Bookmark.h"
 
 #include <cstdint>
@@ -15,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <tuple>
+#include <vector>
 
 class CFileItem;
 
@@ -23,9 +25,11 @@ namespace KODI::VIDEO::UTILS
 
 /*! \brief
  *  Find a local trailer file for a given file item
+ *  \param[in] item the file item
+ *  \param[in] optional Regexp cache to avoid recompilation
  *  \return non-empty string with path of trailer if found
  */
-std::string FindTrailer(const CFileItem& item);
+std::string FindTrailer(const CFileItem& item, KODI::REGEXP::RegExpCache* cache = nullptr);
 
 /*!
  \brief Check whether an item is an optical media folder or its parent.
@@ -98,5 +102,29 @@ ResumeInformation GetItemResumeInformation(const CFileItem& item);
  \return The item containing the folder including loaded info.
  */
 std::shared_ptr<CFileItem> LoadVideoFilesFolderInfo(const CFileItem& folder);
+
+/*!
+ \brief Reduce an edition name to its lower case words, so that two can be compared regardless of
+ the punctuation and separators a filesystem allows (ex. "Director's Cut" vs "Directors.Cut").
+ Apostrophes are dropped and every other punctuation character becomes a word separator. Non-ascii
+ characters are otherwise kept, so that a localised name still matches itself. The result is
+ wrapped in spaces, so that a plain substring search only ever matches whole words.
+ \param name The name to normalise
+ \return The normalised name
+ */
+std::string NormaliseEditionName(const std::string& name);
+
+/*!
+ \brief Look for the name of a known edition (ex. "Director's Cut") within a name, usually that of
+ the folder a movie is in. Matching ignores case, punctuation and separators, and only ever matches
+ whole words. The longest match wins, so that "Ultimate Collector's Edition" is preferred over the
+ "Collector's Edition" it contains. A match at the very start of \p name is ignored, as that is a
+ movie whose title is itself an edition name (ex. "The Final Cut (2004)") rather than a version of
+ some other movie.
+ \param name The name to search, ex. the name of the folder a movie is in
+ \param editions The edition names to look for
+ \return The matched entry of \p editions, empty if none was recognised
+ */
+std::string FindEditionInName(const std::string& name, const std::vector<std::string>& editions);
 
 } // namespace KODI::VIDEO::UTILS

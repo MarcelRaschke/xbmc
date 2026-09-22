@@ -25,11 +25,7 @@ using namespace KODI::SHADER;
 
 CShaderDX::CShaderDX() = default;
 
-CShaderDX::~CShaderDX()
-{
-  if (m_pInputBuffer != nullptr)
-    m_pInputBuffer->Release();
-}
+CShaderDX::~CShaderDX() = default;
 
 bool CShaderDX::Create(unsigned int passIdx,
                        std::string passAlias,
@@ -74,104 +70,101 @@ bool CShaderDX::Create(unsigned int passIdx,
     return false;
   }
 
+  if (!m_effect.SetTechnique("TEQ"))
+  {
+    CLog::Log(LOGERROR,
+              "CShaderDX::Create: Shader has no valid FX11 technique: pass={}, alias={}, "
+              "shader={}, technique=TEQ",
+              m_passIdx, m_passAlias, m_shaderPath);
+    return false;
+  }
+
   return true;
 }
 
-void CShaderDX::Render(IShaderTexture& source, IShaderTexture& target)
+void CShaderDX::Render(IShaderTexture& sourceTexture, IShaderTexture& targetTexture)
 {
-  CShaderTextureDX& sourceDX = static_cast<CShaderTextureDX&>(source);
+  auto& sourceDX = static_cast<CShaderTextureDX&>(sourceTexture);
+  auto& targetDX = static_cast<CShaderTextureDX&>(targetTexture);
 
   // Get source texture object
-  const CD3DTexture& sourceTexture = sourceDX.GetTexture();
+  const CD3DTexture& sourceD3DTexture = sourceDX.GetTexture();
 
-  //! @todo Handle ref textures better
-  auto* targetDX = dynamic_cast<CShaderTextureDX*>(&target);
-  auto* targetDXRef = dynamic_cast<CShaderTextureDXRef*>(&target);
+  // Get target texture object
+  CD3DTexture& targetD3DTexture = targetDX.GetTexture();
 
-  CD3DTexture& targetTexture =
-      targetDX != nullptr ? targetDX->GetTexture() : targetDXRef->GetTexture();
-
-  //! @todo Check for nullptr
-  SetShaderParameters(sourceTexture);
-  Execute({&targetTexture}, 4);
+  SetShaderParameters(sourceD3DTexture);
+  Execute({&targetD3DTexture}, 4);
 }
 
-void CShaderDX::SetSizes(const float2& prevSize,
-                         const float2& prevTextureSize,
-                         const float2& nextSize)
+void CShaderDX::SetSizes(const float2& nextSize,
+                         const float2& prevSize,
+                         const float2& prevTextureSize)
 {
-  m_inputSize = prevSize;
-  m_inputTextureSize = prevTextureSize;
   m_outputSize = nextSize;
+
+  if (prevSize.x > 0 && prevSize.y > 0)
+    m_inputSize = prevSize;
+
+  if (prevTextureSize.x > 0 && prevTextureSize.y > 0)
+    m_inputTextureSize = prevTextureSize;
 }
 
-void CShaderDX::PrepareParameters(
-    const RETRO::ViewportCoordinates& dest,
-    const float2 fullDestSize,
+bool CShaderDX::PrepareParameters(
     IShaderTexture& sourceTexture,
     const std::vector<std::unique_ptr<IShaderTexture>>& pShaderTextures,
     const std::vector<std::unique_ptr<IShader>>& pShaders,
     uint64_t frameCount)
 {
-  CUSTOMVERTEX* v;
-  LockVertexBuffer(reinterpret_cast<void**>(&v));
+  // Set destination rectangle size
+  m_destSize = m_outputSize;
 
-  if (m_passIdx + 1 != static_cast<unsigned int>(pShaders.size())) // Not last pass
-  {
-    // top left
-    v[0].x = -m_outputSize.x / 2;
-    v[0].y = -m_outputSize.y / 2;
-    // top right
-    v[1].x = m_outputSize.x / 2;
-    v[1].y = -m_outputSize.y / 2;
-    // bottom right
-    v[2].x = m_outputSize.x / 2;
-    v[2].y = m_outputSize.y / 2;
-    // bottom left
-    v[3].x = -m_outputSize.x / 2;
-    v[3].y = m_outputSize.y / 2;
+  CUSTOMVERTEX* v = nullptr;
+  if (!LockVertexBuffer(reinterpret_cast<void**>(&v)))
+    return false;
 
-    // Set destination rectangle size
-    m_destSize = m_outputSize;
-  }
-  else // Last pass
-  {
-    // top left
-    v[0].x = dest[0].x - m_outputSize.x / 2;
-    v[0].y = dest[0].y - m_outputSize.y / 2;
-    // top right
-    v[1].x = dest[1].x - m_outputSize.x / 2;
-    v[1].y = dest[1].y - m_outputSize.y / 2;
-    // bottom right
-    v[2].x = dest[2].x - m_outputSize.x / 2;
-    v[2].y = dest[2].y - m_outputSize.y / 2;
-    // bottom left
-    v[3].x = dest[3].x - m_outputSize.x / 2;
-    v[3].y = dest[3].y - m_outputSize.y / 2;
-
-    // Set destination rectangle size for the last pass
-    m_destSize = fullDestSize;
-  }
+  // top left
+  v[0].x = -m_outputSize.x / 2;
+  v[0].y = -m_outputSize.y / 2;
+  // top right
+  v[1].x = m_outputSize.x / 2;
+  v[1].y = -m_outputSize.y / 2;
+  // bottom right
+  v[2].x = m_outputSize.x / 2;
+  v[2].y = m_outputSize.y / 2;
+  // bottom left
+  v[3].x = -m_outputSize.x / 2;
+  v[3].y = m_outputSize.y / 2;
 
   // top left
   v[0].z = 0;
   v[0].tu = 0;
   v[0].tv = 0;
+  v[0].tu2 = 0.0f;
+  v[0].tv2 = 0.0f;
   // top right
   v[1].z = 0;
   v[1].tu = 1;
   v[1].tv = 0;
+  v[1].tu2 = 1.0f;
+  v[1].tv2 = 0.0f;
   // bottom right
   v[2].z = 0;
   v[2].tu = 1;
   v[2].tv = 1;
+  v[2].tu2 = 1.0f;
+  v[2].tv2 = 1.0f;
   // bottom left
   v[3].z = 0;
   v[3].tu = 0;
   v[3].tv = 1;
+  v[3].tu2 = 0.0f;
+  v[3].tv2 = 1.0f;
 
-  UnlockVertexBuffer();
-  UpdateInputBuffer(frameCount);
+  if (!UnlockVertexBuffer())
+    return false;
+
+  return UpdateInputBuffer(frameCount);
 }
 
 void CShaderDX::UpdateMVP()
@@ -190,7 +183,7 @@ bool CShaderDX::CreateVertexBuffer(unsigned int vertCount, unsigned int vertSize
 
 bool CShaderDX::CreateInputLayout(D3D11_INPUT_ELEMENT_DESC* layout, unsigned int numElements)
 {
-  return CRPWinShader::CreateInputLayout(layout, numElements);
+  return CRPWinShader::CreateInputLayout(layout, numElements, "TEQ");
 }
 
 bool CShaderDX::CreateInputBuffer()
@@ -202,30 +195,45 @@ bool CShaderDX::CreateInputBuffer()
                                  D3D11_CPU_ACCESS_WRITE);
   D3D11_SUBRESOURCE_DATA initInputSubresource = {&inputInitData, 0, 0};
 
-  if (FAILED(pDevice->CreateBuffer(&cbInputDesc, &initInputSubresource, &m_pInputBuffer)))
+  Microsoft::WRL::ComPtr<ID3D11Buffer> inputBuffer;
+  const HRESULT result =
+      pDevice->CreateBuffer(&cbInputDesc, &initInputSubresource, inputBuffer.GetAddressOf());
+  if (FAILED(result))
   {
-    CLog::Log(LOGERROR, "CShaderDX::CreateInputBuffer: Failed to create constant buffer for video "
-                        "shader input data");
+    CLog::Log(LOGERROR,
+              "CShaderDX::CreateInputBuffer: Failed to create constant buffer for video shader "
+              "input data: result={}",
+              result);
     return false;
   }
 
+  m_pInputBuffer = std::move(inputBuffer);
   return true;
 }
 
-void CShaderDX::UpdateInputBuffer(uint64_t frameCount)
+bool CShaderDX::UpdateInputBuffer(uint64_t frameCount)
 {
+  if (!m_pInputBuffer)
+  {
+    CLog::Log(LOGERROR, "CShaderDX::UpdateInputBuffer: Constant buffer is unavailable");
+    return false;
+  }
+
   ID3D11DeviceContext1* pContext = DX::DeviceResources::Get()->GetD3DContext();
   cbInput input = GetInputData(frameCount);
-  cbInput* pData;
-  void** ppData = reinterpret_cast<void**>(&pData);
-  D3D11_MAPPED_SUBRESOURCE resource;
-
-  if (SUCCEEDED(pContext->Map(m_pInputBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &resource)))
+  D3D11_MAPPED_SUBRESOURCE resource{};
+  const HRESULT result =
+      pContext->Map(m_pInputBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &resource);
+  if (FAILED(result))
   {
-    *ppData = resource.pData;
-    memcpy(*ppData, &input, sizeof(cbInput));
-    pContext->Unmap(m_pInputBuffer, 0);
+    CLog::Log(LOGERROR, "CShaderDX::UpdateInputBuffer: Failed to map constant buffer: result={}",
+              result);
+    return false;
   }
+
+  memcpy(resource.pData, &input, sizeof(cbInput));
+  pContext->Unmap(m_pInputBuffer.Get(), 0);
+  return true;
 }
 
 CShaderDX::cbInput CShaderDX::GetInputData(uint64_t frameCount) const
@@ -251,7 +259,7 @@ void CShaderDX::SetShaderParameters(const CD3DTexture& sourceTexture)
   m_effect.SetResources("decal", {const_cast<CD3DTexture&>(sourceTexture).GetAddressOfSRV()}, 1);
   m_effect.SetMatrix("modelViewProj", reinterpret_cast<const float*>(&m_MVP));
   //! @todo(optimization) Add frame_count to separate cbuffer
-  m_effect.SetConstantBuffer("input", m_pInputBuffer);
+  m_effect.SetConstantBuffer("input", m_pInputBuffer.Get());
 
   for (const auto& [paramName, paramValue] : m_shaderParameters)
     m_effect.SetFloatArray(paramName.c_str(), &paramValue, 1);

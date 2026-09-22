@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2005-2018 Team Kodi
+ *  Copyright (C) 2005-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -12,7 +12,9 @@
 #include "music/MusicDatabase.h"
 #include "threads/IRunnable.h"
 #include "threads/Thread.h"
+#include "utils/RegExp.h"
 
+#include <atomic>
 #include <string>
 
 class CAlbum;
@@ -91,8 +93,7 @@ public:
 
 protected:
   virtual void Process();
-  bool DoScan(const std::string& strDirectory) override;
-
+  std::pair<ScanComplete, ContentFound> DoScan(const std::string& strDirectory) override;
 
   /*! \brief Find art for albums
    Based on the albums in the folder, finds whether we have unique album art
@@ -262,8 +263,8 @@ protected:
   int GetPathHash(const CFileItemList &items, std::string &hash);
 
   void Run() override;
-  int CountFiles(const CFileItemList& items, bool recursive);
-  int CountFilesRecursively(const std::string& strPath);
+  int CountFiles(const CFileItemList& items, bool recursive, int depth = 0);
+  int CountFilesRecursively(const std::string& strPath, int depth = 0);
 
   /*! \brief Resolve a MusicBrainzID to a URL
    If we have a MusicBrainz ID for an artist or album,
@@ -278,7 +279,8 @@ protected:
 
   int m_currentItem;
   int m_itemCount;
-  bool m_bStop;
+  //! Sticky - never reset, so a scanner instance is good for one scan only
+  std::atomic<bool> m_bStop{false};
   bool m_needsCleanup = false;
   int m_scanType = 0; // 0 - load from files, 1 - albums, 2 - artists
   int m_idSourcePath;
@@ -289,5 +291,6 @@ protected:
   std::set<std::string> m_seenPaths;
   int m_flags;
   CThread m_fileCountReader;
+  mutable KODI::REGEXP::RegExpCache m_regexpCache;
 };
 }

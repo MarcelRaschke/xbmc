@@ -18,7 +18,6 @@
 #include "addons/addoninfo/AddonType.h"
 #include "cores/DataCacheCore.h"
 #include "cores/IPlayerCallback.h"
-#include "cores/RetroPlayer/cheevos/Cheevos.h"
 #include "cores/RetroPlayer/guibridge/GUIGameMessenger.h"
 #include "cores/RetroPlayer/guibridge/GUIGameRenderManager.h"
 #include "cores/RetroPlayer/guiplayback/GUIPlaybackControl.h"
@@ -27,6 +26,7 @@
 #include "cores/RetroPlayer/playback/ReversiblePlayback.h"
 #include "cores/RetroPlayer/process/RPProcessInfo.h"
 #include "cores/RetroPlayer/rendering/RPRenderManager.h"
+#include "cores/RetroPlayer/rendering/RenderContext.h"
 #include "cores/RetroPlayer/savestates/ISavestate.h"
 #include "cores/RetroPlayer/savestates/SavestateDatabase.h"
 #include "cores/RetroPlayer/streams/RPStreamManager.h"
@@ -35,6 +35,7 @@
 #include "games/GameSettings.h"
 #include "games/GameUtils.h"
 #include "games/addons/GameClient.h"
+#include "games/addons/disc/GameClientDiscs.h"
 #include "games/addons/input/GameClientInput.h"
 #include "games/tags/GameInfoTag.h"
 #include "guilib/GUIComponent.h"
@@ -193,12 +194,6 @@ bool CRetroPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options
     // Switch to fullscreen
     CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SWITCHTOFULLSCREEN);
 
-    m_cheevos = std::make_shared<CCheevos>(m_gameClient.get(),
-                                           m_gameServices.GameSettings().GetRAUsername(),
-                                           m_gameServices.GameSettings().GetRAToken());
-
-    m_cheevos->EnableRichPresence();
-
     // Initialize gameplay
     CreatePlayback(savestatePath);
     RegisterWindowCallbacks();
@@ -214,10 +209,10 @@ bool CRetroPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options
   else
   {
     m_input.reset();
-    m_streamManager.reset();
     if (m_gameClient)
       m_gameClient->Unload();
     m_gameClient.reset();
+    m_streamManager.reset();
   }
 
   return bSuccess;
@@ -249,8 +244,6 @@ bool CRetroPlayer::CloseFile(bool reopen /* = false */)
   if (m_input)
     m_input->StopAgentManager();
 
-  m_cheevos.reset();
-
   if (m_gameClient)
     m_gameClient->CloseFile();
 
@@ -261,6 +254,15 @@ bool CRetroPlayer::CloseFile(bool reopen /* = false */)
   if (m_gameClient)
     m_gameClient->Unload();
   m_gameClient.reset();
+
+  // A game client that renders on the GPU shares it with Kodi and releases its
+  // resources as it unloads, without restoring the state Kodi left set up. The
+  // global vertex array object matters most: every GUI draw is rejected while
+  // it is unbound, so the screen stays black after the game ends. Put Kodi's
+  // state back now that the client is gone, the same way Kodi does after a
+  // visualisation or screensaver add-on has had the context.
+  if (m_processInfo)
+    m_processInfo->GetRenderContext().ApplyStateBlock();
 
   m_renderManager.reset();
   if (m_processInfo)
@@ -429,14 +431,14 @@ bool CRetroPlayer::OnAction(const CAction& action)
   {
     case ACTION_PLAYER_RESET:
     {
-      if (m_gameClient)
+      std::unique_lock lock(m_mutex);
+      if (m_gameClient && m_playback)
       {
         float speed = static_cast<float>(m_playback->GetSpeed());
 
         m_playback->SetSpeed(0.0);
 
         CLog::Log(LOGDEBUG, "RetroPlayer[PLAYER]: Sending reset command via ACTION_PLAYER_RESET");
-        m_cheevos->ResetRuntime();
         m_gameClient->Input().HardwareReset();
 
         // If rewinding or paused, begin playback
@@ -511,6 +513,38 @@ bool CRetroPlayer::HasGameAgent() const
 {
   if (m_gameClient)
     return m_gameClient->Input().HasAgent();
+
+  return false;
+}
+
+bool CRetroPlayer::SupportsDiscControl() const
+{
+  if (m_gameClient)
+    return m_gameClient->Discs().SupportsDiscControl();
+
+  return false;
+}
+
+bool CRetroPlayer::IsDiscEjected() const
+{
+  if (m_gameClient)
+    return m_gameClient->Discs().IsEjected();
+
+  return false;
+}
+
+std::string CRetroPlayer::DiscLabel() const
+{
+  if (m_gameClient)
+    return m_gameClient->Discs().GetDiscLabel();
+
+  return "";
+}
+
+bool CRetroPlayer::IsTrayEmpty() const
+{
+  if (m_gameClient)
+    return m_gameClient->Discs().IsTrayEmpty();
 
   return false;
 }
@@ -622,6 +656,12 @@ void CRetroPlayer::OnSpeedChange(double newSpeed)
   m_input->SetSpeed(newSpeed);
   m_renderManager->SetSpeed(newSpeed);
   m_processInfo->SetSpeed(static_cast<float>(newSpeed));
+
+  // Told rather than asked, because a client can ask for this from any thread
+  // and at any point inside a call of its own, where reaching back into the
+  // player would mean locking against the thread that is driving it.
+  if (m_gameClient)
+    m_gameClient->SetPlaybackSpeed(newSpeed);
 }
 
 void CRetroPlayer::CreatePlayback(const std::string& savestatePath)
@@ -630,8 +670,8 @@ void CRetroPlayer::CreatePlayback(const std::string& savestatePath)
   {
     m_playback->Deinitialize();
     m_playback = std::make_unique<CReversiblePlayback>(
-        m_gameClient.get(), *m_renderManager, m_cheevos.get(), *m_guiMessenger,
-        m_gameClient->GetFrameRate(), m_gameClient->GetSerializeSize());
+        m_gameClient.get(), *m_renderManager, *m_guiMessenger, m_gameClient->GetFrameRate(),
+        m_gameClient->GetSerializeSize());
   }
   else
     ResetPlayback();

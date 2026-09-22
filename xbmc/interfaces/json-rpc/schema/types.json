@@ -150,6 +150,14 @@
       "Other": {
         "type": "boolean",
         "required": true
+      },
+      "Info": {
+        "type": "boolean",
+        "required": true
+      },
+      "Sources": {
+        "type": "boolean",
+        "required": true
       }
     },
     "additionalProperties": false
@@ -171,7 +179,8 @@
       "music",
       "pictures",
       "files",
-      "programs"
+      "programs",
+      "games"
     ]
   },
   "List.Amount": {
@@ -633,7 +642,8 @@
       },
       "language": {
         "type": "string",
-        "required": true
+        "required": true,
+        "description": "BCP 47 language tag (e.g. en, en-AU), empty when the stream declares none, passed through unchanged when unrecognized"
       },
       "codec": {
         "type": "string",
@@ -683,7 +693,8 @@
       },
       "language": {
         "type": "string",
-        "required": true
+        "required": true,
+        "description": "BCP 47 language tag (e.g. en, en-AU), empty when the stream declares none, passed through unchanged when unrecognized"
       },
       "codec": {
         "type": "string",
@@ -713,7 +724,8 @@
       },
       "language": {
         "type": "string",
-        "required": true
+        "required": true,
+        "description": "BCP 47 language tag (e.g. en, en-AU), empty when the stream declares none, passed through unchanged when unrecognized"
       },
       "isdefault": {
         "type": "boolean",
@@ -1949,6 +1961,7 @@
         "userrating",
         "ratings",
         "runtime",
+        "status",
         "uniqueid",
         "trailer"
       ]
@@ -2086,7 +2099,8 @@
               "type": "string"
             },
             "language": {
-              "type": "string"
+              "type": "string",
+              "description": "BCP 47 language tag (e.g. en), a language only in library values, empty when the stream declares none, passed through unchanged when unrecognized"
             },
             "channels": {
               "type": "integer"
@@ -2116,7 +2130,17 @@
             "duration": {
               "type": "integer"
             },
+            "stereomode": {
+              "type": "string"
+            },
+            "language": {
+              "type": "string",
+              "description": "BCP 47 language tag (e.g. en), a language only in library values, empty when the stream declares none, passed through unchanged when unrecognized"
+            },
             "hdrtype": {
+              "type": "string"
+            },
+            "hdrdetail": {
               "type": "string"
             }
           },
@@ -2130,7 +2154,8 @@
           "type": "object",
           "properties": {
             "language": {
-              "type": "string"
+              "type": "string",
+              "description": "BCP 47 language tag (e.g. en), a language only in library values, empty when the stream declares none, passed through unchanged when unrecognized"
             }
           },
           "additionalProperties": false
@@ -3189,7 +3214,8 @@
         "cachedurl",
         "lasthashcheck",
         "imagehash",
-        "sizes"
+        "sizes",
+        "lastlibrarycheck"
       ]
     }
   },
@@ -3221,6 +3247,10 @@
         "items": {
           "$ref": "Textures.Details.Size"
         }
+      },
+      "lastlibrarycheck": {
+        "type": "string",
+        "description": "Last time texture existence was verified in library"
       }
     }
   },
@@ -3647,6 +3677,10 @@
           "recording"
         ]
       },
+      "stationname": {
+        "type": "string",
+        "description": "Name of the radio station an internet stream is served by"
+      },
       "albumartist": {
         "$ref": "Array.String"
       },
@@ -3963,7 +3997,8 @@
         "datenew",
         "customproperties",
         "albumduration",
-        "songvideourl"
+        "songvideourl",
+        "stationname"
       ]
     }
   },
@@ -5108,5 +5143,17 @@
         "description": "Chapter position in seconds from start"
       }
     }
+  },
+  "Database.Type": {
+    "type": "string",
+    "enum": [
+      "addons",
+      "epg",
+      "music",
+      "tv",
+      "textures",
+      "videos",
+      "viewmodes"
+    ]
   }
 }

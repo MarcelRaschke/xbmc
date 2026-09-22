@@ -22,6 +22,7 @@
 #include "guilib/DispResource.h"
 #include "guilib/Texture.h"
 #include "messaging/ApplicationMessenger.h"
+#include "rendering/gles/ScreenshotSurfaceGLES.h"
 #include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
@@ -197,6 +198,7 @@ bool CWinSystemTVOS::CreateNewWindow(const std::string& name, bool fullScreen, R
   VIDEOPLAYER::CProcessInfoIOS::Register();
   RETRO::CRPProcessInfoIOS::Register();
   RETRO::CRPProcessInfoIOS::RegisterRendererFactory(new RETRO::CRendererFactoryOpenGLES);
+  CScreenshotSurfaceGLES::Register();
 
   return true;
 }
@@ -441,7 +443,7 @@ CVEAGLContext CWinSystemTVOS::GetEAGLContextObj()
 std::vector<std::string> CWinSystemTVOS::GetConnectedOutputs()
 {
   std::vector<std::string> outputs;
-  outputs.emplace_back("Default");
+  outputs.emplace_back(OUTPUT_NAME_DEFAULT);
   outputs.emplace_back(CONST_HDMI);
 
   return outputs;

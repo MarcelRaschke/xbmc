@@ -8,6 +8,7 @@
 
 #include "ActiveAE.h"
 
+#include "ActiveAEDeviceChange.h"
 #include "ActiveAESettings.h"
 #include "ActiveAESound.h"
 #include "ActiveAEStream.h"
@@ -21,6 +22,7 @@
 #include "cores/DataCacheCore.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/StringUtils.h"
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 
@@ -40,6 +42,28 @@ constexpr float MIN_WATER_LEVEL = 0.02f; // min buffer time to prevent underrun
 constexpr float MIN_WATER_LEVEL_RESAMPLE = 0.1f; // min buffer time in resample mode
 constexpr float BUFFER_LEVEL_INCREMENT = 0.0001f; // increment step for ramp-up
 constexpr double MAX_BUFFER_TIME = 0.1; // max time of a buffer in seconds;
+
+bool IsDefaultDevice(const AESinkDevice& device)
+{
+  return StringUtils::EqualsNoCase(device.name, "default");
+}
+
+bool IsSameDevice(const std::string& driver, const std::string& name, const AESinkDevice& device)
+{
+  return driver == device.driver && name == device.name;
+}
+
+bool IsPreferredDeviceAvailable(const AESinkDevice& configured, const AESinkDevice& validated)
+{
+  if (configured.driver != validated.driver)
+    return false;
+
+  if (configured.name == validated.name)
+    return true;
+
+  return !configured.friendlyName.empty() && !validated.friendlyName.empty() &&
+         configured.friendlyName == validated.friendlyName;
+}
 } // unnamed namespace
 
 void CEngineStats::Reset(unsigned int sampleRate, bool pcm)
@@ -80,7 +104,7 @@ void CEngineStats::GetDelay(AEDelayStatus& status)
   std::unique_lock lock(m_lock);
   status = m_sinkDelay;
   if (m_pcmOutput)
-    status.delay += (double)m_bufferedSamples / m_sinkSampleRate;
+    status.delay += static_cast<double>(m_bufferedSamples) / m_sinkSampleRate;
   else
     status.delay +=
         static_cast<double>(m_bufferedSamples) * m_sinkFormat.m_streamInfo.GetDuration() / 1000;
@@ -152,7 +176,7 @@ void CEngineStats::GetDelay(AEDelayStatus& status, CActiveAEStream *stream)
   status = m_sinkDelay;
   status.delay += static_cast<double>(m_sinkLatency);
   if (m_pcmOutput)
-    status.delay += (double)m_bufferedSamples / m_sinkSampleRate;
+    status.delay += static_cast<double>(m_bufferedSamples) / m_sinkSampleRate;
   else
     status.delay +=
         static_cast<double>(m_bufferedSamples) * m_sinkFormat.m_streamInfo.GetDuration() / 1000;
@@ -176,7 +200,7 @@ void CEngineStats::GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream)
   AEDelayStatus status;
   status = m_sinkDelay;
   if (m_pcmOutput)
-    status.delay += (double)m_bufferedSamples / m_sinkSampleRate;
+    status.delay += static_cast<double>(m_bufferedSamples) / m_sinkSampleRate;
   else
     status.delay +=
         static_cast<double>(m_bufferedSamples) * m_sinkFormat.m_streamInfo.GetDuration() / 1000;
@@ -234,7 +258,8 @@ float CEngineStats::GetWaterLevel()
   if (m_pcmOutput)
     return static_cast<float>(m_bufferedSamples) / m_sinkSampleRate;
   else
-    return static_cast<float>(m_bufferedSamples * m_sinkFormat.m_streamInfo.GetDuration()) / 1000;
+    return static_cast<float>(static_cast<double>(m_bufferedSamples) *
+                              m_sinkFormat.m_streamInfo.GetDuration() / 1000.0);
 }
 
 void CEngineStats::SetSuspended(bool state)
@@ -368,6 +393,21 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         case CActiveAEControlProtocol::APPFOCUSED:
           m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::APPFOCUSED, msg->data, sizeof(bool));
           return;
+        case CActiveAEControlProtocol::YIELDDEVICE:
+        {
+          Message* sinkReply = nullptr;
+          bool success = false;
+          if (m_sink.m_controlPort.SendOutMessageSync(CSinkControlProtocol::RESERVE, &sinkReply, 1s,
+                                                      msg->data, sizeof(bool)))
+          {
+            success = sinkReply->signal == CSinkControlProtocol::ACC;
+            sinkReply->Release();
+          }
+          if (!success)
+            CLog::LogF(LOGERROR, "sink failed to handle the yield request");
+          msg->Reply(success ? CActiveAEControlProtocol::ACC : CActiveAEControlProtocol::ERR);
+          return;
+        }
         case CActiveAEControlProtocol::STREAMRESAMPLEMODE:
           MsgStreamParameter *par;
           par = reinterpret_cast<MsgStreamParameter*>(msg->data);
@@ -460,6 +500,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
             return;
 
           case CActiveAEControlProtocol::DEVICECHANGE:
+          case CActiveAEControlProtocol::DEFAULTDEVICECHANGE:
           case CActiveAEControlProtocol::DEVICECOUNTCHANGE:
             LoadSettings();
             if (!m_settings.device.empty() && CAESinkFactory::HasSinks())
@@ -656,28 +697,10 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           }
           return;
         case CActiveAEControlProtocol::DEVICECOUNTCHANGE:
-          const char* param;
-          param = reinterpret_cast<const char*>(msg->data);
-          CLog::Log(LOGDEBUG, "CActiveAE - device count change event from driver: {}", param);
-          m_sink.EnumerateSinkList(true, param);
-          if (!m_sink.DeviceExist(m_settings.driver, m_currDevice))
-          {
-            UnconfigureSink();
-            LoadSettings();
-            ValidateOutputDevices(false);
-            m_extError = false;
-            Configure();
-            if (!m_extError)
-            {
-              m_state = AE_TOP_CONFIGURED_PLAY;
-              m_extTimeout = 0ms;
-            }
-            else
-            {
-              m_state = AE_TOP_ERROR;
-              m_extTimeout = 500ms;
-            }
-          }
+          HandleDeviceCountChange(reinterpret_cast<const char*>(msg->data), false);
+          return;
+        case CActiveAEControlProtocol::DEFAULTDEVICECHANGE:
+          HandleDeviceCountChange("", true);
           return;
         case CActiveAEControlProtocol::PAUSESTREAM:
           CActiveAEStream *stream;
@@ -883,6 +906,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           if (!displayReset)
           {
             m_controlPort.PurgeOut(CActiveAEControlProtocol::DEVICECHANGE);
+            m_controlPort.PurgeOut(CActiveAEControlProtocol::DEFAULTDEVICECHANGE);
             m_controlPort.PurgeOut(CActiveAEControlProtocol::DEVICECOUNTCHANGE);
             m_sink.EnumerateSinkList(true, "");
             LoadSettings();
@@ -905,6 +929,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           m_extDeferData = false;
           return;
         case CActiveAEControlProtocol::DEVICECHANGE:
+        case CActiveAEControlProtocol::DEFAULTDEVICECHANGE:
         case CActiveAEControlProtocol::DEVICECOUNTCHANGE:
           return;
         default:
@@ -1190,17 +1215,19 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
   std::string device = (m_sinkRequestFormat.m_dataFormat == AE_FMT_RAW) ? m_settings.passthroughdevice : m_settings.device;
 
   const AESinkDevice dev = CAESinkFactory::ParseDevice(device);
+  const bool requestedDefaultDevice = IsDefaultDevice(dev);
 
   if ((!CompareFormat(m_sinkRequestFormat, m_sinkFormat) &&
        !CompareFormat(m_sinkRequestFormat, oldSinkRequestFormat)) ||
       m_currDevice.compare(dev.name) != 0 || m_settings.driver.compare(dev.driver) != 0)
   {
-    CServiceBroker::GetDataCacheCore().ResetAudioCache();
     FlushEngine();
     if (!InitSink())
       return;
     m_settings.driver = dev.driver;
     m_currDevice = dev.name;
+    m_currentDeviceFollowsDefault =
+        requestedDefaultDevice || !IsSameDevice(m_openedDriver, m_openedDevice, dev);
     initSink = true;
     m_stats.Reset(m_sinkFormat.m_sampleRate, m_mode == MODE_PCM);
     m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::VOLUME, &m_volume, sizeof(float));
@@ -1280,6 +1307,7 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
       outputFormat = inputFormat;
       outputFormat.m_dataFormat = AE_FMT_FLOATP;
       outputFormat.m_sampleRate = 48000;
+      outputFormat.m_streamInfo.m_type = m_sinkRequestFormat.m_streamInfo.m_type;
 
       // setup encoder
       if (!m_encoder)
@@ -1295,14 +1323,16 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
       outputFormat.m_frames = m_encoderFormat.m_frames;
 
       // encoder buffer
-      if (m_encoder->GetCodecID() == AV_CODEC_ID_AC3)
+      if (m_encoder->GetCodecID() == AV_CODEC_ID_AC3 || m_encoder->GetCodecID() == AV_CODEC_ID_EAC3)
       {
         AEAudioFormat format;
         format.m_channelLayout += AE_CH_FC;
         format.m_dataFormat = AE_FMT_RAW;
         format.m_sampleRate = 48000;
         format.m_channelLayout = AE_CH_LAYOUT_2_0;
-        format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_AC3;
+        format.m_streamInfo.m_type = (m_encoder->GetCodecID() == AV_CODEC_ID_EAC3)
+                                         ? CAEStreamInfo::STREAM_TYPE_EAC3
+                                         : CAEStreamInfo::STREAM_TYPE_AC3;
         format.m_streamInfo.m_channels = 2;
         format.m_streamInfo.m_sampleRate = 48000;
         format.m_streamInfo.m_frameSize = m_encoderFormat.m_frames;
@@ -1444,6 +1474,7 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
   // reset gui sounds
   if (!CompareFormat(oldInternalFormat, m_internalFormat))
   {
+    CServiceBroker::GetDataCacheCore().ResetAudioCache();
     if (m_settings.guisoundmode == AE_SOUND_ALWAYS ||
        (m_settings.guisoundmode == AE_SOUND_IDLE && m_streams.empty()) ||
        m_aeGUISoundForce)
@@ -1732,9 +1763,11 @@ void CActiveAE::ApplySettingsToFormat(AEAudioFormat& format,
     format.m_dataFormat = AE_FMT_RAW;
     format.m_sampleRate = 48000;
     format.m_channelLayout = AE_CH_LAYOUT_2_0;
-    format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_AC3;
     format.m_streamInfo.m_channels = 2;
     format.m_streamInfo.m_sampleRate = 48000;
+    format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_EAC3;
+    if (!settings.eac3passthrough || !m_sink.SupportsFormat(settings.passthroughdevice, format))
+      format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_AC3;
     if (mode)
       *mode = MODE_TRANSCODE;
   }
@@ -1873,6 +1906,12 @@ bool CActiveAE::InitSink()
     if (data)
     {
       m_sinkFormat = data->format;
+      if (data->device)
+      {
+        const AESinkDevice openedDevice = CAESinkFactory::ParseDevice(*data->device);
+        m_openedDriver = openedDevice.driver;
+        m_openedDevice = openedDevice.name;
+      }
       m_sinkHasVolume = data->hasVolume;
       m_stats.SetSinkCacheTotal(data->cacheTotal);
       m_stats.SetSinkLatency(data->latency);
@@ -1943,6 +1982,9 @@ void CActiveAE::UnconfigureSink()
 
   // make sure we open sink on next configure
   m_currDevice = "";
+  m_openedDevice = "";
+  m_openedDriver = "";
+  m_currentDeviceFollowsDefault = false;
 
   m_inMsgEvent.Reset();
 }
@@ -2800,6 +2842,53 @@ void CActiveAE::ValidateOutputDevices(bool saveChanges)
   }
 }
 
+void CActiveAE::HandleDeviceCountChange(const std::string& driver, bool defaultDeviceChanged)
+{
+  if (defaultDeviceChanged)
+    CLog::LogF(LOGDEBUG, "default device change event");
+  else
+    CLog::LogF(LOGDEBUG, "device count change event from driver: {}", driver);
+
+  const std::string currentDriver = m_openedDriver;
+  const std::string currentDevice = m_openedDevice;
+
+  m_sink.EnumerateSinkList(true, driver);
+
+  const bool passthrough = m_mode == MODE_RAW;
+  const std::string configuredDevice =
+      passthrough ? m_settings.passthroughdevice : m_settings.device;
+  const AESinkDevice configured = CAESinkFactory::ParseDevice(configuredDevice);
+  const std::string validatedDevice = m_sink.ValidateOuputDevice(configuredDevice, passthrough);
+  const AESinkDevice validated = CAESinkFactory::ParseDevice(validatedDevice);
+
+  const INTERNAL::DeviceChangeDecision decision{
+      m_sink.DeviceExist(currentDriver, currentDevice),
+      defaultDeviceChanged,
+      m_currentDeviceFollowsDefault,
+      IsDefaultDevice(configured),
+      !validatedDevice.empty() && IsPreferredDeviceAvailable(configured, validated),
+      IsSameDevice(currentDriver, currentDevice, validated)};
+
+  if (!INTERNAL::ShouldReconfigure(decision))
+    return;
+
+  UnconfigureSink();
+  LoadSettings();
+  ValidateOutputDevices(false);
+  m_extError = false;
+  Configure();
+  if (!m_extError)
+  {
+    m_state = AE_TOP_CONFIGURED_PLAY;
+    m_extTimeout = 0ms;
+  }
+  else
+  {
+    m_state = AE_TOP_ERROR;
+    m_extTimeout = 500ms;
+  }
+}
+
 void CActiveAE::Start()
 {
   Create();
@@ -3020,6 +3109,31 @@ bool CActiveAE::IsSuspended()
   return m_stats.IsSuspended();
 }
 
+bool CActiveAE::YieldDevice()
+{
+  return SendYieldDevice(true);
+}
+
+bool CActiveAE::ReclaimDevice()
+{
+  return SendYieldDevice(false);
+}
+
+bool CActiveAE::SendYieldDevice(bool yield)
+{
+  Message* reply = nullptr;
+  if (!m_controlPort.SendOutMessageSync(CActiveAEControlProtocol::YIELDDEVICE, &reply, 2s, &yield,
+                                        sizeof(bool)))
+  {
+    CLog::LogF(LOGERROR, "timed out");
+    return false;
+  }
+
+  const bool success = reply->signal == CActiveAEControlProtocol::ACC;
+  reply->Release();
+  return success;
+}
+
 float CActiveAE::GetVolume()
 {
   return m_aeVolume;
@@ -3051,6 +3165,11 @@ void CActiveAE::KeepConfiguration(unsigned int millis)
 void CActiveAE::DeviceChange()
 {
   m_controlPort.SendOutMessage(CActiveAEControlProtocol::DEVICECHANGE);
+}
+
+void CActiveAE::DefaultDeviceChange()
+{
+  m_controlPort.SendOutMessage(CActiveAEControlProtocol::DEFAULTDEVICECHANGE);
 }
 
 void CActiveAE::DeviceCountChange(const std::string& driver)

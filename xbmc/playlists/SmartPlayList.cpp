@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2005-2018 Team Kodi
+ *  Copyright (C) 2005-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -16,6 +16,7 @@
 #include "filesystem/SmartPlaylistDirectory.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
+#include "settings/MediaSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/DatabaseUtils.h"
@@ -143,6 +144,7 @@ static const auto fields = std::array{
   TranslateField{ "hdrtype",           Field::HDR_TYPE,                   TEXTIN_FIELD,   nullptr,                              false, 20474 },
   TranslateField{ "hasversions",       Field::HAS_VIDEO_VERSIONS,         BOOLEAN_FIELD,  nullptr,                              false, 20475 },
   TranslateField{ "hasextras",         Field::HAS_VIDEO_EXTRAS,           BOOLEAN_FIELD,  nullptr,                              false, 20476 },
+  TranslateField{ "hdrdetail",         Field::HDR_DETAIL,                 TEXTIN_FIELD,   nullptr,                              false, 20478 },
 };
 // clang-format on
 
@@ -174,6 +176,8 @@ static const auto groups = std::array{
 // clang-format on
 
 constexpr std::string_view RULE_VALUE_SEPARATOR = " / ";
+
+constexpr char TAG_WATCHEDMODE[] = "watchedmode";
 
 CSmartPlaylistRule::CSmartPlaylistRule() = default;
 
@@ -485,6 +489,7 @@ std::vector<Field> CSmartPlaylistRule::GetFields(const std::string &type)
                                     Field::SUBTITLE_LANGUAGE,
                                     Field::VIDEO_ASPECT_RATIO,
                                     Field::HDR_TYPE,
+                                    Field::HDR_DETAIL,
                                 });
   }
   fields.insert(fields.end(), {
@@ -1098,6 +1103,9 @@ std::string CSmartPlaylistRule::FormatWhereClause(const std::string &negate, con
     query = db.PrepareSQL(negate + " EXISTS (SELECT 1 FROM streamdetails WHERE streamdetails.idFile = " + table + ".idFile AND streamdetails.iStreamType = %i GROUP BY streamdetails.idFile HAVING COUNT(streamdetails.iStreamType) " + parameter + ")",CStreamDetail::SUBTITLE);
   else if (m_field == static_cast<int>(Field::HDR_TYPE))
     query = negate + " EXISTS (SELECT 1 FROM streamdetails WHERE streamdetails.idFile = " + table + ".idFile AND strHdrType " + parameter + ")";
+  else if (m_field == static_cast<int>(Field::HDR_DETAIL))
+    query = negate + " EXISTS (SELECT 1 FROM streamdetails WHERE streamdetails.idFile = " + table +
+            ".idFile AND strHdrDetail " + parameter + ")";
 
   if ((m_field == static_cast<int>(Field::PLAYCOUNT) && strType != "songs" && strType != "albums" &&
        strType != "tvshows") ||
@@ -1379,6 +1387,16 @@ bool CSmartPlaylist::Load(const CVariant &obj)
     m_orderField = CSmartPlaylistRule::TranslateOrder(obj["order"]["method"].asString().c_str());
   }
 
+  // load the watched mode
+  m_watchedMode.reset();
+  if (obj.isMember(TAG_WATCHEDMODE))
+  {
+    if (const CVariant v = obj[TAG_WATCHEDMODE]; v.isInteger())
+    {
+      m_watchedMode = CMediaSettings::ToWatchedMode(v.asInteger());
+    }
+  }
+
   return true;
 }
 
@@ -1437,6 +1455,10 @@ bool CSmartPlaylist::LoadFromXML(const TiXmlNode *root, const std::string &encod
 
     m_orderField = CSmartPlaylistRule::TranslateOrder(order->FirstChild()->Value());
   }
+
+  if (int wm; XMLUtils::GetInt(root, TAG_WATCHEDMODE, wm))
+    m_watchedMode = CMediaSettings::ToWatchedMode(wm);
+
   return true;
 }
 
@@ -1503,6 +1525,11 @@ bool CSmartPlaylist::Save(const std::string &path) const
     nodeOrder.InsertEndChild(order);
     pRoot->InsertEndChild(nodeOrder);
   }
+
+  // add the <watchedmode> tag
+  if (m_watchedMode.has_value())
+    XMLUtils::SetInt(pRoot, TAG_WATCHEDMODE, static_cast<int>(m_watchedMode.value()));
+
   return doc.SaveFile(path);
 }
 
@@ -1541,6 +1568,10 @@ bool CSmartPlaylist::Save(CVariant &obj, bool full /* = true */) const
     obj["order"]["ignorefolders"] = (m_orderAttributes & SortAttributeIgnoreFolders);
   }
 
+  // add "watchedmode"
+  if (m_watchedMode.has_value())
+    obj[TAG_WATCHEDMODE] = static_cast<int>(m_watchedMode.value());
+
   return true;
 }
 
@@ -1563,6 +1594,7 @@ void CSmartPlaylist::Reset()
   m_playlistType = "songs"; // sane default
   m_group.clear();
   m_groupMixed = false;
+  m_watchedMode.reset();
 }
 
 void CSmartPlaylist::SetName(const std::string &name)

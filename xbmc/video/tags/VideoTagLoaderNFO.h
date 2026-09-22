@@ -9,6 +9,7 @@
 #pragma once
 
 #include "IVideoInfoTagLoader.h"
+#include "NfoFile.h"
 
 #include <string>
 #include <vector>
@@ -27,10 +28,19 @@ public:
   bool HasInfo() const override;
 
   //! \brief Load "tag" from nfo file.
-  //! \brief tag Tag to load info into
+  //! \param tag Tag to load info into
   CInfoScanner::InfoType Load(CVideoInfoTag& tag,
                               bool prioritise,
                               std::vector<EmbeddedArt>* = nullptr) override;
+
+  //! \brief Load an additional <movie> entry from the nfo file as a version.
+  //! \param index 1-based index of the entry to load (2 is the first additional version)
+  //! \param tag Tag to load info into, only populated when the result is FULL
+  //! The nfo file is already in memory after Load()
+  CInfoScanner::InfoType LoadVersion(int index, CVideoInfoTag& tag) override;
+
+  //! \brief Returns the bluray playlist from a <playlist> nfo element, -1 if there isn't one.
+  int GetBlurayPlaylist() const override;
 
 protected:
   //! \brief Find nfo file for item
@@ -39,4 +49,10 @@ protected:
   std::string FindNFO(const CFileItem& item, bool movieFolder) const;
 
   std::string m_path; //!< Path to nfo file
+
+private:
+  // Cache of the parsed nfo file, populated on the first call to Load()
+  CNfoFile m_nfoReader;
+  bool m_nfoParsed = false;
+  CInfoScanner::InfoType m_parseResult = CInfoScanner::InfoType::NONE;
 };

@@ -13,9 +13,20 @@
 #include "URL.h"
 #include "utils/FileExtensionProvider.h"
 #include "utils/FileUtils.h"
+#include "utils/RegExp.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "video/VideoInfoTag.h"
+
+#include <memory>
+#include <string>
+
+namespace
+{
+//! \brief Folder names holding bonus content rather than a video of their own
+constexpr const char* VIDEO_EXTRAS_FOLDER_REGEXP{
+    R"(^(extras|bonus[ ._-]*(dis[ck]|content|feature)s?)$)"};
+} // namespace
 
 namespace KODI::VIDEO
 {
@@ -41,6 +52,9 @@ bool IsDiscStub(const CFileItem& item)
 
 bool IsDVDFile(const CFileItem& item, bool bVobs /*= true*/, bool bIfos /*= true*/)
 {
+  if (URIUtils::IsContainerPath(item.GetDynPath()))
+    return false;
+
   const std::string strFileName = URIUtils::GetFileName(item.GetDynPath());
   if (bIfos)
   {
@@ -66,6 +80,11 @@ bool IsProtectedBlurayDisc(const CFileItem& item)
 {
   const std::string path = URIUtils::AddFileToFolder(item.GetPath(), "AACS", "Unit_Key_RO.inf");
   return CFileUtils::Exists(path);
+}
+
+bool IsBrowsableFolder(const CFileItem& item)
+{
+  return item.IsFolder() && !item.GetProperty("IsHybridFolder").asBoolean(false);
 }
 
 bool IsSubtitle(const CFileItem& item)
@@ -103,6 +122,10 @@ bool IsVideo(const CFileItem& item)
   if (URIUtils::IsDVD(item.GetPath()))
     return true;
 
+  // IsDVD() above asks whether the path is on optical media, not whether it names a disc.
+  if (URIUtils::IsBlurayPath(item.GetPath()) || URIUtils::IsProtocol(item.GetPath(), "dvd"))
+    return true;
+
   std::string extension;
   if (StringUtils::StartsWithNoCase(item.GetMimeType(), "application/"))
   { /* check for some standard types */
@@ -125,6 +148,7 @@ bool IsVideoAssetFile(const CFileItem& item)
     return false;
 
   // @todo better encoding of video assets as path, they won't always be tied with movies.
+  // Info can also be retrieved with CVideoDbUrl::FromString but less efficient
   const CURL url{item.GetPath()};
   return (url.HasOption("videoversionid") || url.HasOption("assetType"));
 }
@@ -134,10 +158,18 @@ bool IsVideoDb(const CFileItem& item)
   return URIUtils::IsVideoDb(item.GetPath());
 }
 
+bool IsVideoExtrasFolderName(std::string_view name)
+{
+  thread_local REGEXP::RegExpCache cache;
+
+  const std::shared_ptr<CRegExp> regexp{
+      REGEXP::GetRegExp(VIDEO_EXTRAS_FOLDER_REGEXP, &cache, true, CRegExp::autoUtf8)};
+  return regexp && regexp->RegFind(std::string{name}) >= 0;
+}
+
 bool IsVideoExtrasFolder(const CFileItem& item)
 {
-  return item.IsFolder() &&
-         StringUtils::EqualsNoCase(URIUtils::GetFileOrFolderName(item.GetPath()), "extras");
+  return item.IsFolder() && IsVideoExtrasFolderName(URIUtils::GetFileOrFolderName(item.GetPath()));
 }
 
 } // namespace KODI::VIDEO

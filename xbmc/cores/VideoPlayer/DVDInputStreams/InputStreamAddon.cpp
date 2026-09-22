@@ -19,6 +19,7 @@
 #include "cores/VideoPlayer/Interface/InputStreamConstants.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "filesystem/SpecialProtocol.h"
+#include "utils/LanguageTag.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/log.h"
@@ -51,6 +52,7 @@ void CInputStreamProvider::GetAddonInstance(InstanceType instance_type,
 /*****************************************************************************************************************/
 
 using namespace ADDON;
+using namespace KODI::UTILS;
 
 CInputStreamAddon::CInputStreamAddon(const AddonInfoPtr& addonInfo,
                                      IVideoPlayer* player,
@@ -306,7 +308,7 @@ bool CInputStreamAddon::GetTimes(Times &times)
   if (!m_ifc.inputstream->toAddon->get_times)
     return false;
 
-  INPUTSTREAM_TIMES i_times;
+  INPUTSTREAM_TIMES i_times{};
 
   if (m_ifc.inputstream->toAddon->get_times(m_ifc.inputstream, &i_times))
   {
@@ -554,7 +556,7 @@ KODI_HANDLE CInputStreamAddon::cb_get_stream_transfer(KODI_HANDLE handle,
   demuxStream->codecName = stream->m_codecInternalName;
   demuxStream->uniqueId = streamId;
   demuxStream->flags = static_cast<StreamFlags>(stream->m_flags);
-  demuxStream->language = stream->m_language;
+  demuxStream->language = CLanguageTag::Parse(stream->m_language);
 
   if (thisClass->GetAddonInfo()->DependencyVersion(ADDON_INSTANCE_VERSION_INPUTSTREAM_XML_ID) >=
       CAddonVersion("2.0.8"))
@@ -578,10 +580,10 @@ KODI_HANDLE CInputStreamAddon::cb_get_stream_transfer(KODI_HANDLE handle,
     demuxStream->cryptoSession = std::make_shared<DemuxCryptoSession>(
         map[stream->m_cryptoSession.keySystem], stream->m_cryptoSession.sessionId,
         stream->m_cryptoSession.flags);
-
-    if ((stream->m_features & INPUTSTREAM_FEATURE_DECODE) != 0)
-      demuxStream->externalInterfaces = thisClass->m_subAddonProvider;
   }
+
+  if ((stream->m_features & INPUTSTREAM_FEATURE_DECODE) != 0)
+    demuxStream->externalInterfaces = thisClass->m_subAddonProvider;
 
   // Tie the lifetime of the stream to the CInputStreamAddon
   thisClass->m_streams.emplace_back(demuxStream);

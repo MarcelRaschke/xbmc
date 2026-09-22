@@ -121,6 +121,9 @@
 #include "pvr/guilib/PVRGUIActionsPlayback.h"
 #include "pvr/guilib/PVRGUIActionsPowerManagement.h"
 #include "rendering/RenderSystem.h"
+#include "rendering/capture/CaptureMetadata.h"
+#include "rendering/capture/CapturePixels.h"
+#include "rendering/capture/CaptureService.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
 #include "settings/AdvancedSettings.h"
@@ -261,6 +264,10 @@ bool CApplication::Create()
 
   // Register JobManager service
   CServiceBroker::RegisterJobManager(std::make_shared<CJobManager>());
+
+  // Screen capture service
+  CServiceBroker::RegisterCaptureService(
+      std::make_shared<KODI::RENDERING::CAPTURE::CCaptureService>());
 
   // Announcement service
   m_pAnnouncementManager = std::make_shared<ANNOUNCEMENT::CAnnouncementManager>();
@@ -658,9 +665,10 @@ bool CApplication::Initialize()
 
   const auto skinHandling = GetComponent<CApplicationSkinHandling>();
 
-  bool uiInitializationFinished = false;
+  const bool guiCreated = CServiceBroker::GetGUI()->GetWindowManager().Initialized();
+  bool uiInitializationFinished = !guiCreated;
 
-  if (CServiceBroker::GetGUI()->GetWindowManager().Initialized())
+  if (guiCreated)
   {
     const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 
@@ -736,6 +744,22 @@ bool CApplication::Initialize()
     // because we need a real window in the background which gets
     // rendered while we load the main window or enter the master lock key
     CServiceBroker::GetGUI()->GetWindowManager().ActivateWindow(WINDOW_SPLASH);
+  }
+
+  // Must stay above the window activation below: that can raise a modal dialog, whose nested
+  // render loop reaches anything after it only once the dialog has been dismissed.
+  CJSONRPC::Initialize();
+
+  CServiceBroker::RegisterSpeechRecognition(speech::ISpeechRecognition::CreateInstance());
+
+  if (!m_ServiceManager->InitStageThree(profileManager))
+  {
+    CLog::Log(LOGERROR, "Application - Init3 failed");
+  }
+
+  if (guiCreated)
+  {
+    const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 
     if (settings->GetBool(CSettings::SETTING_MASTERLOCK_STARTUPLOCK) &&
         profileManager->GetMasterProfile().getLockMode() != LockMode::EVERYONE &&
@@ -764,19 +788,6 @@ bool CApplication::Initialize()
       // the startup window is considered part of the initialization as it most likely switches to the final window
       uiInitializationFinished = firstWindow != WINDOW_STARTUP_ANIM;
     }
-  }
-  else //No GUI Created
-  {
-    uiInitializationFinished = true;
-  }
-
-  CJSONRPC::Initialize();
-
-  CServiceBroker::RegisterSpeechRecognition(speech::ISpeechRecognition::CreateInstance());
-
-  if (!m_ServiceManager->InitStageThree(profileManager))
-  {
-    CLog::Log(LOGERROR, "Application - Init3 failed");
   }
 
   g_sysinfo.Refresh();
@@ -827,6 +838,53 @@ bool CApplication::OnSettingsSaving() const
   return !m_bStop;
 }
 
+namespace
+{
+// capture tap: serve pending requests from the finished frame before it is
+// presented.
+void ServiceCaptureTaps()
+{
+  using namespace KODI::RENDERING::CAPTURE;
+
+  const auto captureService = CServiceBroker::GetCaptureService();
+  if (!captureService)
+    return;
+
+  const auto requests = captureService->TakeActive(CaptureContent::COMPOSITE);
+  if (requests.empty())
+    return;
+  const auto& request = requests.front(); // at most one consumer per frame
+
+  auto* winSystem = CServiceBroker::GetWinSystem();
+  auto surface = CScreenShot::CreateSurface();
+  if (!winSystem || !surface)
+  {
+    captureService->Fail(request);
+    return;
+  }
+
+  const ScreenshotContext ctx{*winSystem};
+  if (!surface->Read(ctx))
+  {
+    captureService->Fail(request);
+    return;
+  }
+
+  CaptureResult result;
+  result.pixels =
+      std::make_shared<CHeapCapturePixels>(std::unique_ptr<uint8_t[]>(surface->TakeBuffer()));
+  result.width = static_cast<unsigned int>(surface->GetWidth());
+  result.height = static_cast<unsigned int>(surface->GetHeight());
+  result.stride = surface->GetStride();
+  result.format = surface->GetFormat();
+  result.color = GetOutputColorMetadata(*winSystem);
+  result.content = CaptureContent::COMPOSITE; // this tap is the composite half
+
+  captureService->Complete(request, result);
+}
+
+} // namespace
+
 void CApplication::Render()
 {
   // do not render if we are stopped or in background
@@ -851,7 +909,10 @@ void CApplication::Render()
     return;
 
   // render gui layer
-  if (appPower->GetRenderGUI() && !m_skipGuiRender)
+  const bool guiWillRender = appPower->GetRenderGUI() && !m_skipGuiRender;
+  bool compositing = CServiceBroker::GetWinSystem()->BeginGuiComposite(guiWillRender);
+
+  if (guiWillRender)
   {
     if (CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RenderStereoMode::OFF)
     {
@@ -875,8 +936,24 @@ void CApplication::Render()
     m_lastRenderTime = std::chrono::steady_clock::now();
   }
 
+  if (compositing)
+    CServiceBroker::GetWinSystem()->EndGuiComposite();
+
   // render video layer
   CServiceBroker::GetGUI()->GetWindowManager().RenderEx();
+
+  if (compositing)
+    CServiceBroker::GetWinSystem()->CompositeGui();
+
+  // serve pending requests from the finished frame, then fail any left
+  // unserved. Both need a frame that really drew: on a skipped frame nothing
+  // could be served, so FrameComplete would kill live requests.
+  if (hasRendered)
+  {
+    ServiceCaptureTaps();
+    if (const auto captureService = CServiceBroker::GetCaptureService())
+      captureService->FrameComplete();
+  }
 
   CServiceBroker::GetRenderSystem()->EndRender();
 
@@ -1517,6 +1594,12 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
   {
     m_skipGuiRender = false;
 
+    // a new request, or a latched one-shot still awaiting service, marks the
+    // window manager dirty so an otherwise-idle GUI really renders a frame to tap
+    if (const auto captureService = CServiceBroker::GetCaptureService();
+        captureService && captureService->LatchFrame())
+      CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+
     /*! @todo look into the possibility to use this for GBM
     int fps = 0;
 
@@ -1539,10 +1622,14 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
     }
 
     if (!m_bStop)
-    {
-      if (!m_skipGuiRender)
-        CServiceBroker::GetGUI()->GetWindowManager().Process(CTimeUtils::GetFrameTime());
-    }
+      CServiceBroker::GetGUI()->GetWindowManager().Process(CTimeUtils::GetFrameTime());
+
+    // Dirty-driven skip: on paths with a persistent framebuffer (D2P plane or
+    // HDR GUI compositing FBO), skip Render when no controls dirtied themselves
+    // this frame. The persistence keeps the previous OSD on screen for free.
+    if (!m_skipGuiRender && appPlayer->IsRenderingVideoLayer() &&
+        !CServiceBroker::GetGUI()->GetWindowManager().HasDirtyRegions())
+      m_skipGuiRender = true;
     CServiceBroker::GetGUI()->GetWindowManager().FrameMove();
   }
 
@@ -1630,6 +1717,8 @@ bool CApplication::Cleanup()
 
     CServiceBroker::UnregisterTextureCache();
 
+    CServiceBroker::UnregisterCaptureService();
+
     // stop all remaining scripts; must be done after skin has been unloaded,
     // not before some windows still need it when deinitializing during skin
     // unloading
@@ -1660,7 +1749,7 @@ bool CApplication::Cleanup()
     //  are still allocated.
 
     CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Clear();
-    g_LangCodeExpander.Clear();
+    CLangCodeExpander::Clear();
     g_charsetConverter.clear();
     g_directoryCache.Clear();
     //CServiceBroker::GetInputManager().ClearKeymaps(); //! @todo
@@ -1791,9 +1880,12 @@ bool CApplication::Stop(int exitCode)
     // either a bug in core or misbehaving addons. so try saving
     // skin settings early
     CLog::Log(LOGINFO, "Saving skin settings");
-    auto skin = CServiceBroker::GetGUI()->GetSkinInfo();
-    if (skin)
-      skin->SaveSettings();
+    if (CGUIComponent* gui = CServiceBroker::GetGUI())
+    {
+      auto skin = gui->GetSkinInfo();
+      if (skin)
+        skin->SaveSettings();
+    }
 
     m_bStop = true;
     // Add this here to keep the same ordering behaviour for now
@@ -1803,15 +1895,13 @@ bool CApplication::Stop(int exitCode)
     m_ExitCode = exitCode;
     CLog::Log(LOGINFO, "Stopping all");
 
+    // Stop scanning before the job manager is cancelled below
+    // otherwise scans underway are not stopped
+    CMusicLibraryQueue::GetInstance().CancelAllJobs();
+    CVideoLibraryQueue::GetInstance().CancelAllJobs();
+
     // cancel any jobs from the jobmanager
     CServiceBroker::GetJobManager()->CancelJobs();
-
-    // stop scanning before we kill the network and so on
-    if (CMusicLibraryQueue::GetInstance().IsRunning())
-      CMusicLibraryQueue::GetInstance().CancelAllJobs();
-
-    if (CVideoLibraryQueue::GetInstance().IsRunning())
-      CVideoLibraryQueue::GetInstance().CancelAllJobs();
 
     CServiceBroker::GetAppMessenger()->Cleanup();
 
@@ -1844,8 +1934,7 @@ bool CApplication::Stop(int exitCode)
     appListener->UnregisterActionListener(&GetComponent<CApplicationPlayer>()->GetSeekHandler());
     appListener->UnregisterActionListener(&CPlayerController::GetInstance());
 
-    CGUIComponent *gui = CServiceBroker::GetGUI();
-    if (gui)
+    if (CGUIComponent* gui = CServiceBroker::GetGUI())
       gui->GetAudioManager().DeInitialize();
 
     // shutdown the AudioEngine
@@ -1873,23 +1962,24 @@ namespace
 class CCreateAndLoadPlayList : public IRunnable
 {
 public:
-  CCreateAndLoadPlayList(CFileItem& item, std::unique_ptr<PLAYLIST::CPlayList>& playlist)
-    : m_item(item), m_playlist(playlist)
+  CCreateAndLoadPlayList(const CFileItem& item, std::unique_ptr<PLAYLIST::CPlayList>& playlist)
+    : m_item(item),
+      m_playlist(playlist)
   {
   }
 
   void Run() override
   {
-    const std::unique_ptr<PLAYLIST::CPlayList> playlist(PLAYLIST::CPlayListFactory::Create(m_item));
+    std::unique_ptr<PLAYLIST::CPlayList> playlist(PLAYLIST::CPlayListFactory::Create(m_item));
     if (playlist)
     {
       if (playlist->Load(m_item.GetPath()))
-        *m_playlist = *playlist;
+        m_playlist = std::move(playlist);
     }
   }
 
 private:
-  CFileItem& m_item;
+  const CFileItem& m_item;
   std::unique_ptr<PLAYLIST::CPlayList>& m_playlist;
 };
 } // namespace
@@ -1920,7 +2010,7 @@ bool CApplication::PlayMedia(CFileItem& item, const std::string& player, PLAYLIS
       return ProcessAndStartPlaylist(smartpl.GetName(), playlist, smartplPlaylistId);
     }
   }
-  else if (PLAYLIST::IsPlayList(item) || NETWORK::IsInternetStream(item))
+  else if ((PLAYLIST::IsPlayList(item) && !item.IsGame()) || NETWORK::IsInternetStream(item))
   {
     // Not owner. Dialog auto-deletes itself.
     CGUIDialogCache* dlgCache = new CGUIDialogCache(
@@ -2141,11 +2231,17 @@ void CApplication::StopPlaying()
 
   if (gui)
   {
-    int iWin = gui->GetWindowManager().GetActiveWindow();
     const auto appPlayer = GetComponent<CApplicationPlayer>();
     if (appPlayer->IsPlaying())
     {
-      appPlayer->ClosePlayer();
+      {
+        // let script threads into the GUI while we close, or they can deadlock us
+        CSingleExit exitGfx(CServiceBroker::GetWinSystem()->GetGfxContext());
+        CSingleExit exitFrameMove(m_frameMoveGuard);
+        appPlayer->ClosePlayer();
+      }
+
+      const int iWin = gui->GetWindowManager().GetActiveWindow();
 
       // turn off visualisation window when stopping
       if ((iWin == WINDOW_VISUALISATION ||
@@ -2321,6 +2417,10 @@ void CApplication::Process()
   // process messages, even if a movie is playing
   CServiceBroker::GetAppMessenger()->ProcessMessages();
   if (m_bStop) return; //we're done, everything has been unloaded
+
+  // the main loop reaches this with no GUI message handler suspended on the stack, which
+  // is what a deferred skin reload is waiting for
+  GetComponent<CApplicationSkinHandling>()->ProcessPendingSkinReload();
 
   // do any processing that isn't needed on each run
   if( m_slowTimer.GetElapsedMilliseconds() > 500 )

@@ -38,6 +38,7 @@ struct SinkConfig
 struct SinkReply
 {
   AEAudioFormat format;
+  const std::string* device;
   float cacheTotal;
   float latency;
   bool hasVolume;
@@ -56,6 +57,7 @@ public:
     UNCONFIGURE,
     STREAMING,
     APPFOCUSED,
+    RESERVE,
     VOLUME,
     FLUSH,
     TIMEOUT,
@@ -116,6 +118,7 @@ protected:
   void PrintSinks(std::string& driver);
   void GetDeviceFriendlyName(const std::string& device);
   void OpenSink();
+  void CloseSink(bool drain = true);
   void ReturnBuffers();
   void SetSilenceTimer();
   bool NeedIECPacking();
@@ -135,6 +138,9 @@ protected:
   std::chrono::milliseconds m_extSilenceTimeout;
   bool m_extAppFocused;
   bool m_extStreaming;
+  bool m_extReserved{false};
+  std::chrono::duration<double> m_reservedCacheTotal{};
+  std::chrono::duration<double> m_reservedLatency{};
   XbmcThreads::EndTime<> m_extSilenceTimer;
 
   CSampleBuffer m_sampleOfSilence;

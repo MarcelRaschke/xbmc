@@ -17,30 +17,29 @@ namespace KODI
 {
 namespace RETRO
 {
-class CRenderContext;
 class CRenderVideoSettings;
 
 class CRenderBufferPoolOpenGLES : public CBaseRenderBufferPool
 {
 public:
-  CRenderBufferPoolOpenGLES(CRenderContext& context);
+  explicit CRenderBufferPoolOpenGLES(bool supportsTextureSwizzle);
   ~CRenderBufferPoolOpenGLES() override = default;
 
-  // implementation of IRenderBufferPool via CBaseRenderBufferPool
+  // Implementation of IRenderBufferPool via CBaseRenderBufferPool
   bool IsCompatible(const CRenderVideoSettings& renderSettings) const override;
 
-private:
-  // implementation of CBaseRenderBufferPool
+protected:
+  // Implementation of CBaseRenderBufferPool
   IRenderBuffer* CreateRenderBuffer(void* header = nullptr) override;
   bool ConfigureInternal() override;
 
-  // Construction parameters
-  CRenderContext& m_context;
+private:
+  const bool m_supportsTextureSwizzle;
 
   // Configuration parameters
-  GLuint m_pixeltype = 0;
-  GLuint m_internalformat = 0;
-  GLuint m_pixelformat = 0;
+  GLuint m_pixelType = 0;
+  GLuint m_internalFormat = 0;
+  GLuint m_pixelFormat = 0;
   GLuint m_bpp = 0;
 };
 } // namespace RETRO

@@ -60,9 +60,13 @@ macro(buildFFMPEG)
     set(msys_env MSYS2_PATH_TYPE=inherit
                  MSYS_INSTALL_PATH=${MSYS_INSTALL_PATH})
 
-    # Todo: buildmode?
     set(PROMPTLEVEL noprompt)
-    set(BUILDMODE noclean)
+
+    if(FFMPEG_DEP_BUILD)
+      set(BUILDMODE clean)
+    else()
+      set(BUILDMODE noclean)
+    endif()
 
     set(build32 no)
     set(build64 no)
@@ -107,6 +111,13 @@ macro(buildFFMPEG)
                                         --win10=${win10})
     set(INSTALL_COMMAND ${CMAKE_COMMAND} -E true)
 
+    foreach(_ffmpeg_pkg IN ITEMS ${FFMPEG_PKGS})
+      string(REGEX REPLACE "[>]?=.*" "" _libname ${_ffmpeg_pkg})
+      string(REGEX REPLACE "^lib" "" _name ${_libname})
+      list(APPEND _ffmpeg_byproducts ${MINGW_LIBS_DIR}/lib/${_name}.lib)
+    endforeach()
+    set(BUILD_BYPRODUCTS ${_ffmpeg_byproducts})
+
     BUILD_DEP_TARGET()
 
     set(FFMPEG_INCLUDE_DIRS ${MINGW_LIBS_DIR}/include)
@@ -138,7 +149,7 @@ macro(buildFFMPEG)
                                -DENABLE_VDPAU=${FFMPEG_VDPAU}
                                -DEXTRA_FLAGS=${FFMPEG_EXTRA_FLAGS})
 
-    if(KODI_DEPENDSBUILD)
+    if(KODI_DEPENDSBUILD OR (NOT APPLE AND CMAKE_CROSSCOMPILING))
       set(CROSS_ARGS -DDEPENDS_PATH=${DEPENDS_PATH}
                      -DPKG_CONFIG_EXECUTABLE=${PKG_CONFIG_EXECUTABLE}
                      -DCROSSCOMPILING=${CMAKE_CROSSCOMPILING}
@@ -158,6 +169,13 @@ macro(buildFFMPEG)
     string(REPLACE ";" "|" ${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_MODULE_PATH "${CMAKE_MODULE_PATH}")
     set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_LIST_SEPARATOR LIST_SEPARATOR |)
 
+    # when cross-compiling (e.g. macOS x86_64 -> iOS device arm64), SDKROOT env var points to the target SDK
+    # this causes apple-clang to inject it as -isysroot to all invocations including host compiler checks
+    # in the aforementioned example the host compiler check fails because iOS SDK complains about x86_64 arch
+    if(XCODE)
+      set(extra_env_vars "SDKROOT=")
+    endif()
+
     set(CMAKE_ARGS -DCMAKE_MODULE_PATH=${FFMPEG_MODULE_PATH}
                    -DFFMPEG_VER=${FFMPEG_VER}
                    -DCORE_SYSTEM_NAME=${CORE_SYSTEM_NAME}
@@ -171,11 +189,18 @@ macro(buildFFMPEG)
                    -DCMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}
                    -DCMAKE_EXE_LINKER_FLAGS=${LINKER_FLAGS}
                    -DDISABLE_FFMPEG_SOURCE_PLUGINS=${DISABLE_FFMPEG_SOURCE_PLUGINS}
+                   -DEXTRA_ENV_VARS=${extra_env_vars}
                    ${CROSS_ARGS}
                    ${FFMPEG_OPTIONS}
                    -DPKG_CONFIG_PATH=${CMAKE_BINARY_DIR}/${CORE_BUILD_DIR}/lib/pkgconfig)
     set(PATCH_COMMAND ${CMAKE_COMMAND} -E copy
                       ${CMAKE_SOURCE_DIR}/tools/depends/target/ffmpeg/CMakeLists.txt
+                      <SOURCE_DIR>
+                      COMMAND ${CMAKE_COMMAND} -E copy
+                      ${CMAKE_SOURCE_DIR}/tools/depends/target/ffmpeg/002-ffmpeg-libavutil-common-h-cpp11-constant-macros.patch
+                      <SOURCE_DIR>
+                      COMMAND ${CMAKE_COMMAND} -E copy
+                      ${CMAKE_SOURCE_DIR}/tools/depends/target/ffmpeg/008-ffmpeg-all-pgssubdec-use-caller-colorspace.patch
                       <SOURCE_DIR>
     )
 
@@ -185,10 +210,6 @@ macro(buildFFMPEG)
                                 <SOURCE_DIR>)
 
       set(postproc_pkg_config_search "postproc=`PKG_CONFIG_PATH=${DEPENDS_PATH}/lib/pkgconfig ${PKG_CONFIG_EXECUTABLE} --libs --static libpostproc`")
-    endif()
-
-    if(CMAKE_GENERATOR STREQUAL Xcode)
-      set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_GENERATOR CMAKE_GENERATOR "Unix Makefiles")
     endif()
 
     BUILD_DEP_TARGET()
@@ -254,7 +275,7 @@ macro(buildFFMPEG)
                                                 INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_INCLUDE_DIRS}")
 
       if(WIN32 OR WINDOWS_STORE)
-        string(REPLACE "lib" "" name ${_libname})
+        string(REGEX REPLACE "^lib" "" name ${_libname})
         set_target_properties(ffmpeg::${_libname} PROPERTIES
                                                   IMPORTED_LOCATION "${MINGW_LIBS_DIR}/lib/${name}.lib")
       endif()
@@ -274,13 +295,13 @@ else()
   # have latest version to properly track rebuiling.
   if(KODI_DEPENDSBUILD OR (WIN32 OR WINDOWS_STORE))
     # required ffmpeg library versions - tools/depends/target/ffmpeg versions
-    set(REQUIRED_FFMPEG_VERSION 8.0.1)
-    set(_avutil_ver "=60.8.100")
-    set(_avcodec_ver "=62.11.100")
-    set(_avformat_ver "=62.3.100")
-    set(_avfilter_ver "=11.4.100")
-    set(_swscale_ver "=9.1.100")
-    set(_swresample_ver "=6.1.100")
+    set(REQUIRED_FFMPEG_VERSION 9.0.2)
+    set(_avutil_ver "=61.1.102")
+    set(_avcodec_ver "=63.1.102")
+    set(_avformat_ver "=63.1.102")
+    set(_avfilter_ver "=12.1.102")
+    set(_swscale_ver "=10.1.102")
+    set(_swresample_ver "=7.1.102")
     set(_postproc_ver "=59.1.100")
   else()
     # required ffmpeg library versions - minimum supported API compat versions
@@ -381,11 +402,6 @@ else()
      FFMPEG_LIBSWSCALE AND
      FFMPEG_LIBSWRESAMPLE)
     set(FFMPEG_FOUND 1)
-
-    # list of sourceplugin headers for find_path
-    if(FFMPEG_LIBPOSTPROC)
-      set(source_plugin_headers libpostproc/postprocess.h)
-    endif()
   endif()
 
   if(FFMPEG_FOUND)
@@ -396,10 +412,17 @@ else()
     set(FFMPEG_VERSION ${REQUIRED_FFMPEG_VERSION})
 
     find_path(FFMPEG_INCLUDE_DIRS libavcodec/avcodec.h libavfilter/avfilter.h libavformat/avformat.h
-                                  libavutil/avutil.h libswscale/swscale.h ${source_plugin_headers}
+                                  libavutil/avutil.h libswscale/swscale.h
               PATH_SUFFIXES ffmpeg
               HINTS ${DEPENDS_PATH}/include ${MINGW_LIBS_DIR}/include
               ${${CORE_SYSTEM_NAME}_SEARCH_CONFIG})
+
+    if(FFMPEG_LIBPOSTPROC AND NOT FFMPEG_LIBPOSTPROC_INCLUDE_DIRS)
+      find_path(FFMPEG_LIBPOSTPROC_INCLUDE_DIRS libpostproc/postprocess.h
+                PATH_SUFFIXES ffmpeg
+                HINTS ${DEPENDS_PATH}/include ${MINGW_LIBS_DIR}/include
+                ${${CORE_SYSTEM_NAME}_SEARCH_CONFIG})
+    endif()
 
     # Windows is still just a straight file search. Explicitly search for Dav1d for
     # correct dependency linking
@@ -417,8 +440,7 @@ else()
         if(WIN32 OR WINDOWS_STORE)
           add_library(ffmpeg::${libname} UNKNOWN IMPORTED)
           set_target_properties(ffmpeg::${libname} PROPERTIES
-                                                   IMPORTED_LOCATION "${FFMPEG_${libname_UPPER}}"
-                                                   INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_INCLUDE_DIRS}")
+                                                   IMPORTED_LOCATION "${FFMPEG_${libname_UPPER}}")
         else()
           # pkg-config LDFLAGS always seem to have -l<name> listed. We dont need that, as
           # the target gets a direct path to the physical lib
@@ -447,7 +469,14 @@ else()
           add_library(ffmpeg::${libname} STATIC IMPORTED)
           set_target_properties(ffmpeg::${libname} PROPERTIES
                                                    IMPORTED_LOCATION "${FFMPEG_${libname_UPPER}}"
-                                                   INTERFACE_LINK_LIBRARIES "${${libname}_LDFLAGS}"
+                                                   INTERFACE_LINK_LIBRARIES "${${libname}_LDFLAGS}")
+        endif()
+
+        if(FFMPEG_${libname_UPPER}_INCLUDE_DIRS)
+          set_target_properties(ffmpeg::${libname} PROPERTIES
+                                                   INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_${libname_UPPER}_INCLUDE_DIRS}")
+        else()
+          set_target_properties(ffmpeg::${libname} PROPERTIES
                                                    INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_INCLUDE_DIRS}")
         endif()
       endif()
@@ -473,7 +502,6 @@ if(FFMPEG_FOUND)
   if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
     add_library(${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} INTERFACE IMPORTED)
     set_target_properties(${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} PROPERTIES
-                                                                     INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_INCLUDE_DIRS}"
                                                                      INTERFACE_COMPILE_DEFINITIONS "${_ffmpeg_definitions}")
   endif()
 

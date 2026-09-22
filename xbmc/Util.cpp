@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2005-2018 Team Kodi
+ *  Copyright (C) 2005-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -86,8 +86,9 @@
 #include "storage/MediaManager.h"
 #include "utils/Digest.h"
 #include "utils/FileExtensionProvider.h"
-#include "utils/LangCodeExpander.h"
 #include "utils/RegExp.h"
+#include "utils/StringUtils.h"
+#include "video/FilenameAttributes.h"
 #include "video/VideoDatabase.h"
 #include "video/VideoFileItemClassify.h"
 #include "windowing/GraphicContext.h"
@@ -104,11 +105,14 @@
 #include <cstdlib>
 #include <iomanip>
 #include <memory>
+#include <optional>
 #include <random>
 #include <ranges>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <fstrcmp.h>
@@ -447,53 +451,6 @@ std::string CUtil::GetPartNumberFromPath(std::string path)
   return GetPartAndRemoveDiscFromPath(path, PreserveFileName::REMOVE);
 }
 
-bool CUtil::GetFilenameIdentifier(const std::string& fileName,
-                                  std::string& identifierType,
-                                  std::string& identifier)
-{
-  std::string match;
-  return GetFilenameIdentifier(fileName, identifierType, identifier, match);
-}
-
-bool CUtil::GetFilenameIdentifier(const std::string& fileName,
-                                  std::string& identifierType,
-                                  std::string& identifier,
-                                  std::string& match)
-{
-  CRegExp reIdentifier(true, CRegExp::autoUtf8);
-
-  const std::shared_ptr<CAdvancedSettings> advancedSettings =
-      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
-  if (!reIdentifier.RegComp(advancedSettings->m_videoFilenameIdentifierRegExp))
-  {
-    CLog::LogF(LOGERROR, "Invalid filename identifier RegExp:'{}'",
-               advancedSettings->m_videoFilenameIdentifierRegExp);
-    return false;
-  }
-  else
-  {
-    if (reIdentifier.RegComp(advancedSettings->m_videoFilenameIdentifierRegExp))
-    {
-      if (reIdentifier.RegFind(fileName) >= 0)
-      {
-        match = reIdentifier.GetMatch(0);
-        identifierType = reIdentifier.GetMatch(1);
-        identifier = reIdentifier.GetMatch(2);
-        StringUtils::ToLower(identifierType);
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-bool CUtil::HasFilenameIdentifier(const std::string& fileName)
-{
-  std::string identifierType;
-  std::string identifier;
-  return GetFilenameIdentifier(fileName, identifierType, identifier);
-}
-
 void CUtil::CleanString(const std::string& strFileName,
                         std::string& strTitle,
                         std::string& strTitleAndYear,
@@ -506,11 +463,7 @@ void CUtil::CleanString(const std::string& strFileName,
   if (strFileName == "..")
    return;
 
-  std::string identifier;
-  std::string identifierType;
-  std::string identifierMatch;
-  if (GetFilenameIdentifier(strFileName, identifierType, identifier, identifierMatch))
-    StringUtils::Replace(strTitleAndYear, identifierMatch, "");
+  KODI::VIDEO::CFilenameAttributes::CleanFilenameAttributePairs(strTitleAndYear, nullptr);
 
   const std::shared_ptr<CAdvancedSettings> advancedSettings = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
   const std::vector<std::string> &regexps = advancedSettings->m_videoCleanStringRegExps;
@@ -647,21 +600,24 @@ std::string CUtil::GetSplashPath()
   return CSpecialProtocol::TranslatePathConvertCase(*it);
 }
 
-bool CUtil::ExcludeFileOrFolder(const std::string& strFileOrFolder, const std::vector<std::string>& regexps)
+bool CUtil::ExcludeFileOrFolder(const std::string& strFileOrFolder,
+                                const std::vector<std::string>& regexps,
+                                KODI::REGEXP::RegExpCache* cache)
 {
   if (strFileOrFolder.empty())
     return false;
 
-  CRegExp regExExcludes(true, CRegExp::autoUtf8);  // case insensitive regex
+  std::shared_ptr<CRegExp> regExExcludes;
 
   for (const auto &regexp : regexps)
   {
-    if (!regExExcludes.RegComp(regexp.c_str()))
+    if (regExExcludes = KODI::REGEXP::GetRegExp(regexp, cache, true, CRegExp::autoUtf8);
+        regExExcludes == nullptr)
     { // invalid regexp - complain in logs
       CLog::Log(LOGERROR, "{}: Invalid exclude RegExp:'{}'", __FUNCTION__, regexp);
       continue;
     }
-    if (regExExcludes.RegFind(strFileOrFolder) > -1)
+    if (regExExcludes->RegFind(strFileOrFolder) > -1)
     {
       CLog::LogF(LOGDEBUG, "File '{}' excluded. (Matches exclude rule RegExp: '{}')", CURL::GetRedacted(strFileOrFolder), regexp);
       return true;
@@ -749,8 +705,8 @@ void CUtil::GetDVDDriveIcon(const std::string& strPath, std::string& strIcon)
   if ( URIUtils::IsISO9660(strPath) )
   {
 #ifdef HAS_OPTICAL_DRIVE
-    CCdInfo* pInfo = CServiceBroker::GetMediaManager().GetCdInfo();
-    if ( pInfo != NULL && pInfo->IsVideoCd( 1 ) )
+    const std::shared_ptr<CCdInfo> pInfo{CServiceBroker::GetMediaManager().GetCdInfo()};
+    if (pInfo && pInfo->IsVideoCd(1))
     {
       strIcon = "DefaultVCD.png";
       return ;
@@ -1441,7 +1397,7 @@ void CUtil::DeleteVideoDatabaseDirectoryCache()
 
 void CUtil::DeleteDirectoryCache(const std::string &prefix)
 {
-  std::string searchPath = "special://temp/";
+  std::string searchPath = "special://temp/archive_cache/";
   CFileItemList items;
   if (!XFILE::CDirectory::GetDirectory(searchPath, items, ".fi", DIR_FLAG_NO_FILE_DIRS))
     return;
@@ -1945,7 +1901,10 @@ void CUtil::GetVideoBasePathAndFileName(const std::string& videoPath,
   else
   {
     videoFileName = URIUtils::ReplaceExtension(URIUtils::GetFileName(videoPath), "");
-    basePath = URIUtils::GetBasePath(videoPath);
+    CURL url(videoPath);
+    // Strip URL options (e.g., query/fragment) before computing the parent path
+    url.SetOptions("");
+    basePath = URIUtils::GetParentPath(url.Get());
   }
 }
 
@@ -2205,6 +2164,49 @@ void CUtil::ScanForExternalSubtitles(const std::string& strMovie, std::vector<st
   CLog::Log(LOGDEBUG, "{}: END (total time: {} ms)", __FUNCTION__, duration.count());
 }
 
+namespace
+{
+//! Matched case-insensitively against filename tokens
+constexpr auto EXTERNAL_STREAM_FLAG_WORDS = std::array{
+    std::pair{std::string_view{"none"}, StreamFlags::FLAG_NONE},
+    std::pair{std::string_view{"default"}, StreamFlags::FLAG_DEFAULT},
+    std::pair{std::string_view{"forced"}, StreamFlags::FLAG_FORCED},
+    std::pair{std::string_view{"original"}, StreamFlags::FLAG_ORIGINAL},
+    std::pair{std::string_view{"impaired"}, StreamFlags::FLAG_HEARING_IMPAIRED},
+};
+
+/*!
+ * \brief The stream flag a filename token states.
+ * \note FLAG_NONE is one of the words rather than an absence of one, so that a filename
+ *       saying "none" has stated a flag rather than part of the stream's name.
+ * \param[in] token One token of the filename.
+ * \return The flag, or nullopt where the token states none.
+ */
+std::optional<StreamFlags> ExternalStreamFlagFromToken(std::string_view token)
+{
+  const auto it = std::ranges::find_if(EXTERNAL_STREAM_FLAG_WORDS, [&token](const auto& word)
+                                       { return StringUtils::EqualsNoCase(token, word.first); });
+  if (it == EXTERNAL_STREAM_FLAG_WORDS.end())
+    return std::nullopt;
+
+  return it->second;
+}
+
+/*!
+ * \brief The language a filename token states.
+ * \param[in] token One token of the filename.
+ * \return The language, or nullopt where the token states none.
+ */
+std::optional<KODI::UTILS::CLanguageTag> ExternalStreamLanguageFromToken(const std::string& token)
+{
+  // _ stands in for the BCP 47 subtag separator, since - separates the filename's own tokens
+  std::string langCode{token};
+  std::ranges::replace(langCode, '_', '-');
+
+  return KODI::UTILS::CLanguageTag::TryParse(langCode);
+}
+} // namespace
+
 ExternalStreamInfo CUtil::GetExternalStreamDetailsFromFilename(const std::string& videoPath, const std::string& associatedFile)
 {
   ExternalStreamInfo info;
@@ -2237,46 +2239,23 @@ ExternalStreamInfo CUtil::GetExternalStreamDetailsFromFilename(const std::string
     std::vector<std::string> tokens;
     StringUtils::Tokenize(inputString, tokens, delimiters);
 
+    // The tokens are read from the end of the filename towards the front, so of several languages
+    // the one nearest the extension is the stream's and the rest belong to its name
     for (auto it = tokens.rbegin(); it != tokens.rend(); ++it)
     {
-      // try to recognize a flag
-      std::string flag_tmp(*it);
-      StringUtils::ToLower(flag_tmp);
-      if (!flag_tmp.compare("none"))
+      if (const auto flag = ExternalStreamFlagFromToken(*it); flag.has_value())
       {
-        info.flag |= StreamFlags::FLAG_NONE;
-        continue;
-      }
-      else if (!flag_tmp.compare("default"))
-      {
-        info.flag |= StreamFlags::FLAG_DEFAULT;
-        continue;
-      }
-      else if (!flag_tmp.compare("forced"))
-      {
-        info.flag |= StreamFlags::FLAG_FORCED;
-        continue;
-      }
-      else if (!flag_tmp.compare("original"))
-      {
-        info.flag |= StreamFlags::FLAG_ORIGINAL;
-        continue;
-      }
-      else if (!flag_tmp.compare("impaired"))
-      {
-        info.flag |= StreamFlags::FLAG_HEARING_IMPAIRED;
+        info.flag |= *flag;
         continue;
       }
 
-      if (info.language.empty())
+      if (info.language.IsEmpty())
       {
-        // try to recognize language
-        std::string langCode = *it;
-        // _ is used in BCP47 tags as subtag separator instead of - since - is a token separator.
-        // Convert back to - separator to parse.
-        std::ranges::replace(langCode, '_', '-');
-        if (g_LangCodeExpander.ConvertToBcp47(langCode, info.language))
+        if (const auto tag = ExternalStreamLanguageFromToken(*it); tag.has_value())
+        {
+          info.language = *tag;
           continue;
+        }
       }
 
       name = (*it) + " " + name;
@@ -2290,7 +2269,7 @@ ExternalStreamInfo CUtil::GetExternalStreamDetailsFromFilename(const std::string
     info.flag = StreamFlags::FLAG_NONE;
 
   CLog::Log(LOGDEBUG, "{} - Language = '{}' / Name = '{}' / Flag = '{}' from {}", __FUNCTION__,
-            info.language, info.name, info.flag, CURL::GetRedacted(associatedFile));
+            info.language.AsBcp47(), info.name, info.flag, CURL::GetRedacted(associatedFile));
 
   return info;
 }

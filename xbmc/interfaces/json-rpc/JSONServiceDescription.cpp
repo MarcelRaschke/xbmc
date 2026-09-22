@@ -11,6 +11,7 @@
 #include "AddonsOperations.h"
 #include "ApplicationOperations.h"
 #include "AudioLibrary.h"
+#include "DatabaseOperations.h"
 #include "FavouritesOperations.h"
 #include "FileOperations.h"
 #include "GUIOperations.h"
@@ -30,6 +31,7 @@
 #include "utils/StringUtils.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <memory>
 
 using namespace JSONRPC;
@@ -163,6 +165,7 @@ JsonRpcMethodMap CJSONServiceDescription::m_methodMaps[] = {
   { "VideoLibrary.RemoveEpisode",                   CVideoLibrary::RemoveEpisode },
   { "VideoLibrary.RemoveMusicVideo",                CVideoLibrary::RemoveMusicVideo },
   { "VideoLibrary.Scan",                            CVideoLibrary::Scan },
+  { "VideoLibrary.SetSourceContent",                CVideoLibrary::SetSourceContent },
   { "VideoLibrary.Export",                          CVideoLibrary::Export },
   { "VideoLibrary.Clean",                           CVideoLibrary::Clean },
 
@@ -180,6 +183,7 @@ JsonRpcMethodMap CJSONServiceDescription::m_methodMaps[] = {
   { "GUI.SetStereoscopicMode",                      CGUIOperations::SetStereoscopicMode },
   { "GUI.GetStereoscopicModes",                     CGUIOperations::GetStereoscopicModes },
   { "GUI.ActivateScreenSaver",                      CGUIOperations::ActivateScreenSaver},
+  { "GUI.TakeScreenshot",                           CGUIOperations::TakeScreenshot },
 
 // PVR operations
   { "PVR.GetProperties",                            CPVROperations::GetProperties },
@@ -191,6 +195,7 @@ JsonRpcMethodMap CJSONServiceDescription::m_methodMaps[] = {
   { "PVR.GetBroadcasts",                            CPVROperations::GetBroadcasts },
   { "PVR.GetBroadcastDetails",                      CPVROperations::GetBroadcastDetails },
   { "PVR.GetBroadcastIsPlayable",                   CPVROperations::GetBroadcastIsPlayable },
+  { "PVR.GetPlayableBroadcasts",                    CPVROperations::GetPlayableBroadcasts },
   { "PVR.GetTimers",                                CPVROperations::GetTimers },
   { "PVR.GetTimerDetails",                          CPVROperations::GetTimerDetails },
   { "PVR.GetRecordings",                            CPVROperations::GetRecordings },
@@ -258,7 +263,10 @@ JsonRpcMethodMap CJSONServiceDescription::m_methodMaps[] = {
 
 // XBMC operations
   { "XBMC.GetInfoLabels",                           CXBMCOperations::GetInfoLabels },
-  { "XBMC.GetInfoBooleans",                         CXBMCOperations::GetInfoBooleans }
+  { "XBMC.GetInfoBooleans",                         CXBMCOperations::GetInfoBooleans },
+
+// Database operations
+  { "Database.GetDatabaseName",                     CDatabaseOperations::GetDatabaseNameByType },
 };
 
 // clang-format on
@@ -1812,6 +1820,7 @@ JSONRPC_STATUS CJSONServiceDescription::Print(CVariant &result, ITransportLayer 
   std::map<std::string, JSONSchemaTypeDefinitionPtr> types;
   CJsonRpcMethodMap methods;
   std::map<std::string, CVariant> notifications;
+  std::vector<const JsonRpcStatusDescription*> errors;
 
   int clientPermissions = client->GetPermissionFlags();
   int transportCapabilities = transport->GetCapabilities();
@@ -1866,6 +1875,17 @@ JSONRPC_STATUS CJSONServiceDescription::Print(CVariant &result, ITransportLayer 
       else
         return InvalidParams;
     }
+    else if (filterByType == "error")
+    {
+      const auto errorIterator =
+          std::find_if(JSONRPC_STATUS_DESCRIPTIONS.begin(), JSONRPC_STATUS_DESCRIPTIONS.end(),
+                       [&name](const JsonRpcStatusDescription& description)
+                       { return name == description.name; });
+      if (errorIterator != JSONRPC_STATUS_DESCRIPTIONS.end())
+        errors.push_back(&(*errorIterator));
+      else
+        return InvalidParams;
+    }
     else
       return InvalidParams;
 
@@ -1904,6 +1924,10 @@ JSONRPC_STATUS CJSONServiceDescription::Print(CVariant &result, ITransportLayer 
     types = m_types;
     methods = m_actionMap;
     notifications = m_notifications;
+
+    errors.reserve(JSONRPC_STATUS_DESCRIPTIONS.size());
+    for (const auto& description : JSONRPC_STATUS_DESCRIPTIONS)
+      errors.push_back(&description);
   }
 
   // Print the header
@@ -1967,6 +1991,20 @@ JSONRPC_STATUS CJSONServiceDescription::Print(CVariant &result, ITransportLayer 
   std::map<std::string, CVariant>::const_iterator notificationIteratorEnd = notifications.end();
   for (notificationIterator = notifications.begin(); notificationIterator != notificationIteratorEnd; ++notificationIterator)
     result["notifications"][notificationIterator->first] = notificationIterator->second[notificationIterator->first];
+
+  // Print the error taxonomy
+  for (const auto* status : errors)
+  {
+    CVariant currentError = CVariant(CVariant::VariantTypeObject);
+
+    currentError["code"] = status->status;
+    currentError["message"] = status->message;
+    if (printDescriptions)
+      currentError["description"] = status->description;
+    currentError["hasdata"] = status->hasData;
+
+    result["errors"][status->name] = currentError;
+  }
 
   return OK;
 }

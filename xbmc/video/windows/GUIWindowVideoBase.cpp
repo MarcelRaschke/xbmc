@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2005-2025 Team Kodi
+ *  Copyright (C) 2005-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -56,9 +56,9 @@
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/Variant.h"
+#include "utils/guilib/GUIContentUtils.h"
 #include "utils/log.h"
 #include "video/VideoDatabase.h"
-#include "video/VideoDbUrl.h"
 #include "video/VideoFileItemClassify.h"
 #include "video/VideoInfoScanner.h"
 #include "video/VideoLibraryQueue.h"
@@ -70,7 +70,12 @@
 #include "video/guilib/VideoSelectActionProcessor.h"
 #include "view/GUIViewState.h"
 
+#include <map>
 #include <memory>
+#include <ranges>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 using namespace XFILE;
 using namespace VIDEODATABASEDIRECTORY;
@@ -229,6 +234,9 @@ bool CGUIWindowVideoBase::OnItemInfo(const CFileItem& fileItem)
   if (fileItem.HasAddonInfo())
     return CGUIDialogAddonInfo::ShowForItem(std::make_shared<CFileItem>(fileItem));
 
+  if (URIUtils::IsPVR(fileItem.GetPath()))
+    return KODI::UTILS::GUILIB::CGUIContentUtils::ShowInfoForItem(fileItem);
+
   // Video version
   if (fileItem.HasVideoInfoTag() && fileItem.GetVideoInfoTag()->m_type == MediaTypeVideoVersion)
     return false;
@@ -310,10 +318,11 @@ bool CGUIWindowVideoBase::OnItemInfo(const CFileItem& fileItem)
       const std::vector<std::string>& excludeFromScan = CServiceBroker::GetSettingsComponent()
                                                             ->GetAdvancedSettings()
                                                             ->m_moviesExcludeFromScanRegExps;
+      KODI::REGEXP::RegExpCache cache;
       for (const auto& i : items)
       {
         if (VIDEO::IsVideo(*i) && !PLAYLIST::IsPlayList(*i) &&
-            !CUtil::ExcludeFileOrFolder(i->GetPath(), excludeFromScan))
+            !CUtil::ExcludeFileOrFolder(i->GetPath(), excludeFromScan, &cache))
         {
           item.SetPath(i->GetPath());
           item.SetFolder(false);
@@ -434,13 +443,14 @@ CGUIWindowVideoBase::ShowInfoResult CGUIWindowVideoBase::ShowInfo(
     movieDetails = *item->GetVideoInfoTag();
   }
 
+  // @todo add support to refresh movie version information
+  pDlgInfo->EnableItemRefresh((info != nullptr && info->Content() != ContentType::NONE &&
+                               !VIDEO::IsVideoAssetFile(*item)) ||
+                              item->GetVideoContentType() == VideoDbContentType::MOVIE_SETS);
+
   bool needsRefresh = false;
   if (bHasInfo)
   {
-    // @todo add support to refresh movie version information
-    if ((!info || info->Content() == ContentType::NONE || VIDEO::IsVideoAssetFile(*item)) &&
-        item->GetVideoContentType() != VideoDbContentType::MOVIE_SETS)
-      item->SetProperty("xxuniqueid", "xx" + movieDetails.GetUniqueID()); // disable refresh button
     item->SetProperty("CheckAutoPlayNextItem", IsActive());
     *item->GetVideoInfoTag() = movieDetails;
     pDlgInfo->SetMovie(item.get());
@@ -533,7 +543,7 @@ bool CGUIWindowVideoBase::ShowInfoAndRefresh(const CFileItemPtr& item, const Scr
       if (IsActive())
       {
         const int selectedItem{m_viewControl.GetSelectedItem()};
-        Refresh();
+        Refresh(true);
         m_viewControl.SetSelectedItem(selectedItem);
       }
       return true;
@@ -678,7 +688,8 @@ void CGUIWindowVideoBase::OnRestartItem(int iItem, const std::string &player)
 
 void CGUIWindowVideoBase::LoadVideoInfo(CFileItemList& items,
                                         CVideoDatabase& database,
-                                        bool allowReplaceLabels)
+                                        bool allowReplaceLabels,
+                                        int getDetails)
 {
   //! @todo this could possibly be threaded as per the music info loading,
   //!       we could also cache the info
@@ -717,14 +728,62 @@ void CGUIWindowVideoBase::LoadVideoInfo(CFileItemList& items,
   bool fetchedPlayCounts = false;
   if (!content.empty())
   {
-    database.GetItemsForPath(content, items.GetPath(), dbItems);
+    database.GetItemsForPath(content, items.GetPath(), dbItems, getDetails);
+
+    // Determine episode ranges for multi-episode items sharing the same basePath (same file).
+    if (content == "episodes" && !dbItems.IsEmpty())
+    {
+      std::map<std::string, std::vector<int>> episodesByPath;
+      for (int i = 0; i < dbItems.Size(); i++)
+      {
+        const auto& dbItem = dbItems.Get(i);
+        if (dbItem->HasVideoInfoTag())
+          episodesByPath[dbItem->GetPath()].emplace_back(i);
+      }
+
+      std::unordered_map<int, std::string> showPlotCache;
+      for (const auto& episodes : episodesByPath | std::views::values)
+      {
+        if (episodes.size() < 2)
+          continue;
+
+        const auto& firstItem{dbItems.Get(episodes[0])};
+        int numSpecials{0};
+        std::string episodeString;
+        for (int e : episodes)
+        {
+          const auto* tag{dbItems.Get(e)->GetVideoInfoTag()};
+          if (!tag)
+            continue;
+          if (tag->m_iSeason == 0)
+            numSpecials++;
+          else
+            episodeString += fmt::format("S{:02d}E{:02d};", tag->m_iSeason, tag->m_iEpisode);
+        }
+
+        // Store on the first item (saved by SetFastLookup)
+        firstItem->SetProperty("episodes", episodeString);
+        firstItem->SetProperty("episodes_specials", numSpecials);
+
+        // Pre-fetch show plot for multi-episode range labels (as the individual episode plot is not relevant)
+        if (firstItem->HasVideoInfoTag())
+        {
+          const int idShow{firstItem->GetVideoInfoTag()->m_iIdShow};
+          auto [it, inserted] = showPlotCache.emplace(idShow, std::string{});
+          if (inserted)
+            it->second = database.GetPlotByShowId(idShow);
+          firstItem->SetProperty("episodes_show_plot", it->second);
+        }
+      }
+    }
+
     dbItems.SetFastLookup(true);
   }
 
   for (int i = 0; i < items.Size(); i++)
   {
-    CFileItemPtr pItem = items[i];
-    CFileItemPtr match;
+    const auto& pItem{items[i]};
+    std::shared_ptr<CFileItem> match;
 
     if (pItem->IsFolder() && !pItem->IsParentFolder())
     {
@@ -743,9 +802,18 @@ void CGUIWindowVideoBase::LoadVideoInfo(CFileItemList& items,
     }
     if (match)
     {
-      pItem->UpdateInfo(*match, replaceLabels);
+      pItem->UpdateInfo(*match, replaceLabels, MultipleEpisodes::GROUP_MULTIPLE_EPISODES);
 
-      if (stackItems)
+      if (match->HasProperty("episodes") && !pItem->GetPath().empty())
+      {
+        CURL url("episodes://");
+        url.SetHostName(pItem->GetPath());
+        if (pItem->HasVideoInfoTag())
+          url.SetOptions("?show=" + std::to_string(pItem->GetVideoInfoTag()->m_iIdShow));
+        pItem->SetPath(url.Get());
+        pItem->SetFolder(true);
+      }
+      else if (stackItems)
       {
         if (match->IsFolder())
           pItem->SetPath(match->GetVideoInfoTag()->m_strPath);
@@ -1159,6 +1227,10 @@ bool CGUIWindowVideoBase::GetDirectory(const std::string &strDirectory, CFileIte
   if (info && info->Content() == ContentType::TVSHOWS)
     m_stackingAvailable = false;
 
+  // Do not stack episodes that are in a multi-episode file
+  if (strDirectory.starts_with("episodes://"))
+    m_stackingAvailable = false;
+
   if (m_stackingAvailable && !items.IsStack() && CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_MYVIDEOS_STACKVIDEOS))
     items.Stack();
 
@@ -1319,24 +1391,37 @@ void CGUIWindowVideoBase::OnSearchItemFound(const CFileItem* pSelItem)
   }
   else
   {
-    std::string strPath = URIUtils::GetDirectory(pSelItem->GetPath());
+    const std::string selPath = pSelItem->GetPath();
+    std::string selPathWithSlash = selPath;
+    URIUtils::AddSlashAtEnd(selPathWithSlash);
+    const bool isMovieUrl = selPath.starts_with("videodb://movies/titles/") ||
+                            selPath.starts_with("videodb://movies/sets/");
+    const bool isVideoDb = VIDEO::IsVideoDb(*pSelItem);
+    const std::string parentPath = URIUtils::GetDirectory(selPath);
 
-    Update(strPath);
+    Update(parentPath);
 
     if (VIDEO::IsVideoDb(*pSelItem) &&
         CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
             CSettings::SETTING_MYVIDEOS_FLATTEN))
       SetHistoryForPath("");
     else
-      SetHistoryForPath(strPath);
+      SetHistoryForPath(parentPath);
 
     for (int i = 0; i < m_vecItems->Size(); i++)
     {
       CFileItemPtr pItem = m_vecItems->Get(i);
-      CURL url(pItem->GetPath());
-      if (VIDEO::IsVideoDb(*pSelItem))
+      const std::string itemPath = pItem->GetPath();
+      CURL url(itemPath);
+      if (isVideoDb)
         url.SetOptions("");
-      if (url.Get() == pSelItem->GetPath())
+      const std::string urlPath = url.Get();
+      // Relax match condition for movie with versions / extras
+      // The selected item looks like videodb://movies/titles/1234 but the list items look
+      // like videodb://movies/titles/1234/-2/
+      // Allow a match on the beginning of the string instead of an exact match.
+      // Same for movies in sets (url starts with videodb://movies/sets/)
+      if (urlPath == selPath || (isMovieUrl && urlPath.starts_with(selPathWithSlash)))
       {
         m_viewControl.SetSelectedItem(i);
         break;

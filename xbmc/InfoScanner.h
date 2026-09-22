@@ -8,8 +8,10 @@
 
 #pragma once
 
+#include <atomic>
 #include <set>
 #include <string>
+#include <utility>
 
 class CGUIDialogProgressBarHandle;
 
@@ -47,8 +49,6 @@ public:
   //! \brief Empty destructor.
   virtual ~CInfoScanner() = default;
 
-  virtual bool DoScan(const std::string& strDirectory) = 0;
-
   /*! \brief Check if the folder is excluded from scanning process
    \param strDirectory Directory to scan
    \return true if there is a .nomedia file
@@ -65,10 +65,24 @@ protected:
   //! \brief Protected constructor to only allow subclass instances.
   CInfoScanner() = default;
 
+  enum class ScanComplete : bool
+  {
+    Stopped,
+    Completed
+  };
+
+  enum class ContentFound : bool
+  {
+    None,
+    NewContentFound
+  };
+
+  virtual std::pair<ScanComplete, ContentFound> DoScan(const std::string& strDirectory) = 0;
+
   std::set<std::string, std::less<>> m_pathsToScan; //!< Set of paths to scan
   bool m_showDialog = false; //!< Whether or not to show progress bar dialog
   CGUIDialogProgressBarHandle* m_handle = nullptr; //!< Progress bar handle
-  bool m_bRunning = false; //!< Whether or not scanner is running
-  bool m_bCanInterrupt = false; //!< Whether or not scanner is currently interruptible
+  std::atomic<bool> m_bRunning{false}; //!< Whether or not scanner is running
+  std::atomic<bool> m_bCanInterrupt{false}; //!< Whether or not scanner is currently interruptible
   bool m_bClean = false; //!< Whether or not to perform cleaning during scanning
 };

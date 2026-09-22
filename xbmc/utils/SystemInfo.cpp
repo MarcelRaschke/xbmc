@@ -16,8 +16,9 @@
 #endif
 #include "CompileInfo.h"
 #include "ServiceBroker.h"
-#include "filesystem/CurlFile.h"
 #include "filesystem/File.h"
+#include "filesystem/HttpClientFactory.h"
+#include "filesystem/IHttpClient.h"
 #include "guilib/guiinfo/GUIInfoLabels.h"
 #include "network/Network.h"
 #include "platform/Filesystem.h"
@@ -54,8 +55,6 @@ using namespace winrt::Windows::System::Profile;
 #include "utils/XMLUtils.h"
 #if defined(TARGET_ANDROID)
 #include <androidjni/Build.h>
-#include <androidjni/Context.h>
-#include <androidjni/PackageManager.h>
 #endif
 
 /* Platform identification */
@@ -305,8 +304,8 @@ const CSysData &CSysInfoJob::GetData() const
 CSysData::INTERNET_STATE CSysInfoJob::GetInternetState()
 {
   // Internet connection state!
-  XFILE::CCurlFile http;
-  if (http.IsInternet())
+  auto http = XFILE::CreateHttpClient();
+  if (http->IsInternet())
     return CSysData::CONNECTED;
   return CSysData::DISCONNECTED;
 }
@@ -691,7 +690,9 @@ std::string CSysInfo::GetOsName(bool emptyIfUnknown /* = false*/)
 #elif defined(TARGET_DARWIN_OSX)
     osName = "macOS";
 #elif defined(TARGET_ANDROID)
-    if (CJNIContext::GetPackageManager().hasSystemFeature(CJNIPackageManager::FEATURE_LEANBACK))
+    char characteristics[PROP_VALUE_MAX] = {};
+    const int propLen = __system_property_get("ro.build.characteristics", characteristics);
+    if (propLen > 0 && std::string(characteristics, propLen).find("tv") != std::string::npos)
       osName = "Android TV";
     else
       osName = "Android";

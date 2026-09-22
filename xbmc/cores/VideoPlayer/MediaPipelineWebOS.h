@@ -45,6 +45,89 @@ class CDVDAudioCodec;
 class StarfishMediaAPIs;
 
 /**
+ * \brief Lock-free cooperative gate for pausing a worker thread.
+ *
+ * The worker calls \ref Checkpoint() each loop iteration. If a pause has been
+ * requested it blocks (via std::atomic::wait) until the requester releases.
+ *
+ * Other threads obtain a \ref Lock RAII guard which requests the pause, waits
+ * for the worker to reach its checkpoint, and resumes the worker on
+ * destruction.
+ */
+class CWorkerGate
+{
+public:
+  /**
+   * \brief RAII guard – pauses the worker on construction, resumes on destruction.
+   */
+  class Lock
+  {
+  public:
+    explicit Lock(CWorkerGate& gate) : m_gate(gate) { m_gate.Pause(); }
+    ~Lock() { m_gate.Resume(); }
+    Lock(const Lock&) = delete;
+    Lock& operator=(const Lock&) = delete;
+
+  private:
+    CWorkerGate& m_gate;
+  };
+
+  /**
+   * \brief Called by the worker thread at the top of every loop iteration.
+   *
+   * If a pause has been requested the call blocks until the requester
+   * calls Resume() (typically via Lock destruction).
+   */
+  void Checkpoint()
+  {
+    if (m_pauseRequested.load(std::memory_order_acquire))
+    {
+      m_paused.store(true, std::memory_order_release);
+      m_paused.notify_all();
+      m_pauseRequested.wait(true, std::memory_order_acquire);
+      m_paused.store(false, std::memory_order_release);
+    }
+  }
+
+  /**
+   * \brief Called by the worker thread just before it exits its loop.
+   *
+   * Ensures any thread blocked in Pause() is woken up.
+   */
+  void OnExit()
+  {
+    m_paused.store(true, std::memory_order_release);
+    m_paused.notify_all();
+  }
+
+  /**
+   * \brief Indicate whether the associated worker thread is running.
+   *
+   * Must be set to \c true before the worker loop and \c false after.
+   */
+  void SetRunning(const bool running) { m_running.store(running, std::memory_order_release); }
+
+private:
+  void Pause()
+  {
+    m_pauseRequested.store(true, std::memory_order_release);
+    if (m_running.load(std::memory_order_acquire))
+      m_paused.wait(false, std::memory_order_acquire);
+  }
+
+  void Resume()
+  {
+    m_pauseRequested.store(false, std::memory_order_release);
+    m_pauseRequested.notify_all();
+    m_paused.store(false, std::memory_order_release);
+  }
+
+  std::atomic<bool> m_pauseRequested{false};
+  std::atomic<bool> m_paused{false};
+  std::atomic<bool> m_running{false};
+};
+
+/**
  * @class CMediaPipelineWebOS
  * @brief WebOS media pipeline for audio/video playback.
  */
@@ -240,13 +323,13 @@ public:
   /**
    * @return Audio stream debug info
    */
-  std::string GetAudioInfo();
+  std::string GetAudioInfo() const;
 
   /**
    *
    * @return Video stream debug info
    */
-  std::string GetVideoInfo();
+  std::string GetVideoInfo() const;
 
   /**
    * @brief Get the resolution of the video stream
@@ -280,8 +363,9 @@ private:
   /**
    * @brief Feed a video packet to the media API.
    * @param msg Demux packet wrapped in a CDVDMsg.
+   * @return true if the packet was consumed, false if not.
    */
-  void FeedVideoData(const std::shared_ptr<CDVDMsg>& msg);
+  bool FeedVideoData(const std::shared_ptr<CDVDMsg>& msg);
 
   /**
    * @brief Render subtitle and overlay graphics at given timestamp.
@@ -292,8 +376,9 @@ private:
   /**
    * @brief Feed an audio packet to the media API.
    * @param msg Demux packet wrapped in a CDVDMsg.
+   * @return true if the packet was consumed, false if not.
    */
-  void FeedAudioData(const std::shared_ptr<CDVDMsg>& msg);
+  bool FeedAudioData(const std::shared_ptr<CDVDMsg>& msg);
 
   /**
    * @brief Configure and load media streams into the pipeline.
@@ -324,20 +409,10 @@ private:
   void SetupBitstreamConverter(CDVDStreamInfo& hint);
 
   /**
-   * @brief Updates the player video debug info.
+   * @brief Claims the audio device for the pipeline or hands it back to ActiveAE.
+   * @param pipelineOwns True while the pipeline needs exclusive access to the audio device.
    */
-  void UpdateVideoInfo();
-
-  /**
-   * @brief Updates the player video debug info.
-   */
-  void UpdateAudioInfo();
-
-  /**
-   * @brief Updates ActiveAE volume setting based on current audio state.
-   * @param playing True if media is currently playing, false otherwise.
-   */
-  void UpdateGUISounds(bool playing);
+  void RequestAudioDevice(bool pipelineOwns);
 
   /**
    * @brief Callback for media events.
@@ -389,6 +464,21 @@ private:
    */
   unsigned int GetQueueLevel(StreamType type) const;
 
+  /**
+   * @brief Get the maximum supported video resolution for a given codec.
+   * @param codec Codec name to query.
+   * @param width Output parameter for maximum width.
+   * @param height Output parameter for maximum height.
+   * @param framerate Output parameter for maximum framerate.
+   * @return True if the information was successfully retrieved, false otherwise.
+   */
+  bool GetMaxVideoResolution(const std::string& codec,
+                             int& width,
+                             int& height,
+                             int& framerate) const;
+
+  static constexpr std::chrono::nanoseconds NO_PTS{-1};
+
   std::condition_variable m_eventCondition;
   std::mutex m_eventMutex;
 
@@ -414,8 +504,8 @@ private:
   std::atomic<unsigned long> m_droppedFrames{0};
   std::chrono::duration<double, std::ratio<1, DVD_TIME_BASE>> m_audioClock{0.0};
 
-  std::mutex m_audioCriticalSection;
-  std::mutex m_videoCriticalSection;
+  CWorkerGate m_videoGate;
+  CWorkerGate m_audioGate;
 
   CDVDMessageQueue m_messageQueueAudio;
   CDVDMessageQueue m_messageQueueVideo;
@@ -424,15 +514,18 @@ private:
   CRenderManager& m_renderManager;
   CDVDClock& m_clock;
   CDVDOverlayContainer& m_overlayContainer;
-  bool m_hasAudio{true};
+  std::atomic<bool> m_hasAudio{true};
+
+  std::mutex m_audioDeviceMutex;
+  bool m_ownsAudioDevice{false};
 
   std::atomic<bool> m_videoClosed{true};
   std::atomic<bool> m_audioClosed{true};
 
-  std::mutex m_audioInfoMutex;
-  std::string m_audioInfo;
-  std::mutex m_videoInfoMutex;
-  std::string m_videoInfo;
+  std::atomic<std::chrono::nanoseconds> m_fedAudioPts{NO_PTS};
+  std::atomic<std::chrono::nanoseconds> m_fedVideoPts{NO_PTS};
+  std::atomic<bool> m_started{false};
+
   BitstreamStats m_audioStats{};
   BitstreamStats m_videoStats{};
 

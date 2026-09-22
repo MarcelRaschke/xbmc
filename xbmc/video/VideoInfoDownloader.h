@@ -13,6 +13,8 @@
 #include "addons/Scraper.h"
 #include "threads/Thread.h"
 
+#include <atomic>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -26,7 +28,7 @@ class CScraperError;
 }
 namespace XFILE
 {
-class CurlFile;
+class IHttpClient;
 }
 
 typedef std::vector<CScraperUrl> MOVIELIST;
@@ -72,7 +74,7 @@ protected:
                       GET_EPISODE_LIST = 3,
                       GET_EPISODE_DETAILS = 4 };
 
-  XFILE::CCurlFile*   m_http;
+  std::unique_ptr<XFILE::IHttpClient> m_http;
   std::string         m_movieTitle;
   int                 m_movieYear;
   ADDON::CScraper::UniqueIDs m_uniqueIDs;
@@ -80,8 +82,9 @@ protected:
   CVideoInfoTag       m_movieDetails;
   CScraperUrl         m_url;
   KODI::VIDEO::EPISODELIST m_episode;
-  LOOKUP_STATE m_state = DO_NOTHING;
-  int m_found = 0;
+  std::atomic<LOOKUP_STATE> m_state{DO_NOTHING};
+  std::atomic<int> m_found{0};
+  std::atomic<bool> m_result{false};
   ADDON::ScraperPtr   m_info;
 
   // threaded stuff

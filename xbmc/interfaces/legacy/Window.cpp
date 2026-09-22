@@ -277,6 +277,7 @@ namespace XBMCAddon
       switch(pGUIControl->GetControlType())
       {
       case CGUIControl::GUICONTROL_BUTTON:
+      case CGUIControl::GUICONTROL_TOGGLEBUTTON:
         pControl = new ControlButton();
 
         li = ((CGUIButtonControl *)pGUIControl)->GetLabelInfo();
@@ -310,6 +311,9 @@ namespace XBMCAddon
         break;
       case CGUIControl::GUICONTROL_SLIDER:
         pControl = new ControlSlider();
+        break;
+      case CGUIControl::GUICONTROL_VIDEO:
+        pControl = new ControlVideoWindow();
         break;
       case CGUIControl::GUICONTAINER_LIST:
       case CGUIControl::GUICONTAINER_WRAPLIST:

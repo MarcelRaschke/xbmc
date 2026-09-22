@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2005-2020 Team Kodi
+ *  Copyright (C) 2005-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -28,10 +28,13 @@
 #include "utils/URIUtils.h"
 #include "utils/Variant.h"
 #include "video/VideoDatabase.h"
+#include "video/windows/GUIWindowVideoBase.h"
 
 #include <memory>
+#include <set>
 
 using namespace KODI;
+using namespace KODI::REGEXP;
 using namespace JSONRPC;
 using namespace XFILE;
 
@@ -112,11 +115,23 @@ JSONRPC_STATUS CFileOperations::GetDirectory(const std::string &method, ITranspo
       if (status != OK)
         return status;
     }
+    else if (media == "files" && NeedsLibraryLookup(parameterObject))
+    {
+      CVideoDatabase videoDatabase;
+      if (videoDatabase.Open())
+      {
+        // Matched folder paths may be rewritten according to the GUI stacking setting.
+        CGUIWindowVideoBase::LoadVideoInfo(
+            items, videoDatabase, false,
+            CVideoLibrary::GetDetailsFromJsonParameters(parameterObject));
+      }
+    }
 
     CFileItemList filteredFiles;
+    RegExpCache cache;
     for (unsigned int i = 0; i < (unsigned int)items.Size(); i++)
     {
-      if (CUtil::ExcludeFileOrFolder(items[i]->GetPath(), regexps))
+      if (CUtil::ExcludeFileOrFolder(items[i]->GetPath(), regexps, &cache))
         continue;
 
       if (items[i]->IsSmb())
@@ -386,9 +401,10 @@ bool CFileOperations::FillFileItemList(const CVariant &parameterObject, CFileIte
           items.Sort(SortBy::FILE, SortOrder::ASCENDING);
 
         CFileItemList filteredDirectories;
+        RegExpCache cache;
         for (unsigned int i = 0; i < (unsigned int)items.Size(); i++)
         {
-          if (CUtil::ExcludeFileOrFolder(items[i]->GetPath(), regexps))
+          if (CUtil::ExcludeFileOrFolder(items[i]->GetPath(), regexps, &cache))
             continue;
 
           if (items[i]->IsFolder())
@@ -419,6 +435,24 @@ bool CFileOperations::FillFileItemList(const CVariant &parameterObject, CFileIte
         return true;
       }
     }
+  }
+
+  return false;
+}
+
+bool CFileOperations::NeedsLibraryLookup(const CVariant& parameterObject)
+{
+  if (!parameterObject.isMember("properties") || !parameterObject["properties"].isArray())
+    return false;
+
+  static const std::set<std::string> fileProperties = {"file",     "filetype", "label",
+                                                       "mimetype", "size",     "lastmodified"};
+
+  for (CVariant::const_iterator_array property = parameterObject["properties"].begin_array();
+       property != parameterObject["properties"].end_array(); ++property)
+  {
+    if (property->isString() && !fileProperties.contains(property->asString()))
+      return true;
   }
 
   return false;

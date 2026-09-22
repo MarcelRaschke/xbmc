@@ -11,6 +11,7 @@
 #include "cores/RetroPlayer/shaders/ShaderPreset.h"
 
 #include <d3d11.h>
+#include <wrl/client.h>
 
 namespace KODI
 {
@@ -40,14 +41,16 @@ protected:
   bool CreateBuffers() override;
   bool CreateShaderTextures() override;
   bool CreateSamplers() override;
-  void RenderShader(IShader& shader, IShaderTexture& source, IShaderTexture& target) override;
+  void RenderShader(IShader& shader,
+                    IShaderTexture& sourceTexture,
+                    IShaderTexture& targetTexture) override;
 
 private:
   // Point/nearest neighbor sampler
-  ID3D11SamplerState* m_pSampNearest = nullptr;
+  Microsoft::WRL::ComPtr<ID3D11SamplerState> m_pSampNearest;
 
   // Linear sampler
-  ID3D11SamplerState* m_pSampLinear = nullptr;
+  Microsoft::WRL::ComPtr<ID3D11SamplerState> m_pSampLinear;
 };
 } // namespace SHADER
 } // namespace KODI

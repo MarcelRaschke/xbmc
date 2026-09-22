@@ -19,9 +19,9 @@
 #include "input/InputCodingTable.h"
 #include "input/actions/Action.h"
 #include "input/actions/ActionIDs.h"
-#include "input/keyboard/KeyIDs.h"
 #include "input/keyboard/KeyboardLayoutManager.h"
 #include "input/keyboard/XBMC_vkeys.h"
+#include "input/keymaps/keyboard/KeyIDs.h"
 #include "interfaces/AnnouncementManager.h"
 #include "messaging/ApplicationMessenger.h"
 #include "resources/LocalizeStrings.h"
@@ -278,9 +278,9 @@ bool CGUIDialogKeyboardGeneric::OnAction(const CAction &action)
       CGUIControl *edit = GetControl(CTL_EDIT);
       if (edit)
         handled = edit->OnAction(action);
-      if (!handled && actionId >= KEY_VKEY && actionId < KEY_UNICODE)
+      if (!handled && actionId >= KEY_VKEY && actionId <= KEY_VKEY_MAX)
       {
-        unsigned char b = actionId & 0xFF;
+        uint16_t b = actionId - KEY_VKEY;
         if (b == XBMCVK_TAB)
         {
           // Toggle left/right key mode

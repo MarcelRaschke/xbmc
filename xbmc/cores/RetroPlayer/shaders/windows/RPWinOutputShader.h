@@ -12,6 +12,7 @@
 #include "cores/RetroPlayer/RetroPlayerTypes.h"
 #include "guilib/D3DResource.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -29,7 +30,9 @@ public:
 
 protected:
   virtual bool CreateVertexBuffer(unsigned int vertCount, unsigned int vertSize);
-  virtual bool CreateInputLayout(D3D11_INPUT_ELEMENT_DESC* layout, unsigned numElements);
+  virtual bool CreateInputLayout(D3D11_INPUT_ELEMENT_DESC* layout,
+                                 unsigned numElements,
+                                 const char* techniqueName);
   virtual bool LockVertexBuffer(void** data);
   virtual bool UnlockVertexBuffer();
   virtual bool LoadEffect(const std::string& filename, DefinesMap* defines);
@@ -60,14 +63,18 @@ public:
               const KODI::RETRO::ViewportCoordinates& points,
               CRect& viewPort,
               CD3DTexture& target,
-              unsigned int range = 0);
+              unsigned int range = 0,
+              uint8_t alpha = 0xFF);
 
 private:
-  void PrepareParameters(unsigned int sourceWidth,
+  bool PrepareParameters(unsigned int sourceWidth,
                          unsigned int sourceHeight,
                          CRect sourceRect,
                          const KODI::RETRO::ViewportCoordinates& points);
-  void SetShaderParameters(CD3DTexture& sourceTexture, unsigned int range, CRect& viewPort);
+  void SetShaderParameters(CD3DTexture& sourceTexture,
+                           unsigned int range,
+                           uint8_t alpha,
+                           CRect& viewPort);
 
   unsigned int m_sourceWidth{0};
   unsigned int m_sourceHeight{0};

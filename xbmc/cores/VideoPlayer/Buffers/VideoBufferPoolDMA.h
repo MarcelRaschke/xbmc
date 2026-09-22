@@ -9,10 +9,9 @@
 #pragma once
 
 #include "cores/VideoPlayer/Buffers/VideoBuffer.h"
+#include "cores/VideoPlayer/Buffers/VideoBufferDMA.h"
 
 #include <memory>
-
-class CVideoBufferDMA;
 
 class CVideoBufferPoolDMA : public IVideoBufferPool
 {
@@ -21,7 +20,7 @@ public:
   ~CVideoBufferPoolDMA() override;
 
   // implementation of IVideoBufferPool
-  CVideoBuffer* Get() override;
+  CVideoBufferDMA* Get() override;
   void Return(int id) override;
   void Configure(AVPixelFormat format, int size) override;
   bool IsConfigured() override;
@@ -40,5 +39,6 @@ private:
   uint32_t TranslateFormat(AVPixelFormat format);
 
   uint32_t m_fourcc = 0;
+  uint32_t m_planes = 0;
   uint64_t m_size = 0;
 };

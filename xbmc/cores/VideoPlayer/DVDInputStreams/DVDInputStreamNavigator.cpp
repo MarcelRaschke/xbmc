@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2005-2022 Team Kodi
+ *  Copyright (C) 2005-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -23,7 +23,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/Geometry.h"
-#include "utils/LangCodeExpander.h"
+#include "utils/LanguageTag.h"
 #include "utils/StreamUtils.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
@@ -37,6 +37,20 @@
 #include <memory>
 #include <string>
 
+/*****************************************************************************
+* iovec structure: vectored data entry
+*****************************************************************************/
+#ifdef TARGET_WINDOWS
+struct iovec
+{
+  void *iov_base;     /* Pointer to data. */
+  size_t iov_len;     /* Length of data.  */
+};
+#else
+#   include <sys/uio.h>                                      /* struct iovec */
+#endif
+
+using namespace KODI::UTILS;
 using namespace std::chrono_literals;
 
 namespace
@@ -125,9 +139,6 @@ bool CDVDInputStreamNavigator::Open()
   if (!m_dll.Load())
     return false;
 
-  // load the dvd language codes
-  // g_LangCodeExpander.LoadStandardCodes();
-
   // libdvdcss fails if the file path contains VIDEO_TS.IFO or VIDEO_TS/VIDEO_TS.IFO
   // libdvdnav is still able to play without, so strip them.
 
@@ -202,15 +213,18 @@ bool CDVDInputStreamNavigator::Open()
 
   // get default language settings
   char language_menu[3];
-  strncpy(language_menu, g_langInfo.GetDVDMenuLanguage().c_str(), sizeof(language_menu)-1);
+  strncpy(language_menu, g_langInfo.GetDVDMenuLanguage().AsIso6391().c_str(),
+          sizeof(language_menu) - 1);
   language_menu[2] = '\0';
 
   char language_audio[3];
-  strncpy(language_audio, g_langInfo.GetDVDAudioLanguage().c_str(), sizeof(language_audio)-1);
+  strncpy(language_audio, g_langInfo.GetDVDAudioLanguage().AsIso6391().c_str(),
+          sizeof(language_audio) - 1);
   language_audio[2] = '\0';
 
   char language_subtitle[3];
-  strncpy(language_subtitle, g_langInfo.GetDVDSubtitleLanguage().c_str(), sizeof(language_subtitle)-1);
+  strncpy(language_subtitle, g_langInfo.GetDVDSubtitleLanguage().AsIso6391().c_str(),
+          sizeof(language_subtitle) - 1);
   language_subtitle[2] = '\0';
 
   // set language settings in case they are not set in xbmc's configuration
@@ -939,7 +953,7 @@ SubtitleStreamInfo CDVDInputStreamNavigator::GetSubtitleStreamInfo(const int iId
     lang[1] = (subp_attributes.lang_code & 255);
     lang[0] = (subp_attributes.lang_code >> 8) & 255;
 
-    info.language = g_LangCodeExpander.ConvertToISO6392B(lang);
+    info.language = CLanguageTag::Parse(lang);
   }
 
   return info;
@@ -974,6 +988,8 @@ void CDVDInputStreamNavigator::SetSubtitleStreamName(SubtitleStreamInfo &info, c
       default:
         break;
     }
+    info.codecName = "dvd_subtitle";
+    info.codecDesc = "VobSub";
   }
 }
 
@@ -1099,7 +1115,7 @@ AudioStreamInfo CDVDInputStreamNavigator::GetAudioStreamInfo(const int iId)
     lang[1] = (audio_attributes.lang_code & 255);
     lang[0] = (audio_attributes.lang_code >> 8) & 255;
 
-    info.language = g_LangCodeExpander.ConvertToISO6392B(lang);
+    info.language = CLanguageTag::Parse(lang);
   }
 
   return info;
