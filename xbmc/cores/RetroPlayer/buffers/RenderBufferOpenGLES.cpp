@@ -199,3 +199,11 @@ void CRenderBufferOpenGLES::DeleteFramebuffer()
     m_fboId = 0;
   }
 }
+
+void CRenderBufferOpenGLES::SyncRender()
+{
+  // The game core rendered into the FBO on the game-loop thread. Ensure that
+  // work is complete before the render thread samples the shared color texture.
+  if (m_bHardware)
+    glFinish();
+}

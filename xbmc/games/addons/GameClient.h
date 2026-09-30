@@ -179,6 +179,7 @@ public:
 
   // Implementation of IHwFramebufferCallback
   void HardwareContextReset() override;
+  void HardwareContextDestroy() override;
 
   /*!
    * @brief To get the interface table used between addon and kodi
@@ -261,6 +262,7 @@ private:
   // Properties of the current playing file
   std::atomic_bool m_bIsPlaying; // True between OpenFile() and CloseFile()
   std::atomic_bool m_hasFrameRun{false};
+  std::atomic_bool m_hwRendering{false}; // True once the core enables hardware (GL) rendering
   std::string m_gamePath;
   bool m_bRequiresGameLoop = false;
   size_t m_serializeSize = 0;

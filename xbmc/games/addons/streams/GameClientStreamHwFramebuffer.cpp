@@ -50,6 +50,10 @@ void CGameClientStreamHwFramebuffer::CloseStream()
 {
   if (m_stream != nullptr)
   {
+    // Let the core free its GPU resources (with the GL context current) before
+    // Kodi tears down the rendering stream and its framebuffer.
+    m_callback.HardwareContextDestroy();
+
     m_stream->CloseStream();
     m_stream = nullptr;
   }

@@ -34,6 +34,7 @@ public:
   bool Allocate(AVPixelFormat format, unsigned int width, unsigned int height) override;
   uintptr_t GetCurrentFramebuffer() override { return m_fboId; }
   bool UploadTexture() override;
+  void SyncRender() override;
 
   GLuint TextureID() const { return m_textureId; }
 

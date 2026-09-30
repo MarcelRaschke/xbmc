@@ -346,7 +346,11 @@ uintptr_t CRPRenderManager::GetCurrentFramebuffer(unsigned int width, unsigned i
     if (renderBuffer != nullptr)
     {
       m_pendingBuffers.emplace_back(renderBuffer);
-      return renderBuffer->GetCurrentFramebuffer();
+
+      const uintptr_t framebuffer = renderBuffer->GetCurrentFramebuffer();
+      CLog::Log(LOGDEBUG, "RetroPlayer[RENDER]: Providing hardware framebuffer {} ({}x{})",
+                framebuffer, width, height);
+      return framebuffer;
     }
   }
 
@@ -366,6 +370,11 @@ void CRPRenderManager::RenderFrame()
   }
 
   // The game core has finished rendering a frame to the hardware framebuffer.
+  // This runs on the game-loop thread with the shared GL context current, so
+  // flush the core's rendering before handing the buffer to the render thread.
+  for (IRenderBuffer* buffer : m_pendingBuffers)
+    buffer->SyncRender();
+
   // Move any pending hardware-rendered buffers into the render buffer set so the
   // render thread can present them on the next RenderWindow/RenderControl call.
   std::unique_lock lock(m_bufferMutex);
