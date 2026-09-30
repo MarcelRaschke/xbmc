@@ -292,7 +292,21 @@ void CRPRendererOpenGL::Render(uint8_t alpha)
       m_lastTargetHeight = m_fullDestHeight;
     }
 
-    const auto it = m_RBTexturesMap.find(renderBuffer);
+    auto it = m_RBTexturesMap.find(renderBuffer);
+    if (it != m_RBTexturesMap.end())
+    {
+      // With dynamic resolution a buffer address can be recycled for a buffer of
+      // a different size or texture; drop the stale cached source texture.
+      const auto& cachedSource = it->second->sourceTexture;
+      if (cachedSource->GetTextureID() != renderBuffer->TextureID() ||
+          cachedSource->GetWidth() != static_cast<float>(renderBuffer->GetWidth()) ||
+          cachedSource->GetHeight() != static_cast<float>(renderBuffer->GetHeight()))
+      {
+        m_RBTexturesMap.erase(it);
+        it = m_RBTexturesMap.end();
+      }
+    }
+
     if (it != m_RBTexturesMap.end())
     {
       rbTextures = it->second.get();

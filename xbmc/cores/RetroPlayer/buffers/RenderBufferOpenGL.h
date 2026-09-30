@@ -12,6 +12,8 @@
 
 #include "system_gl.h"
 
+#include <thread>
+
 namespace KODI
 {
 namespace RETRO
@@ -59,6 +61,11 @@ private:
   // Hardware-rendering resources (FBO the game core renders into)
   GLuint m_fboId = 0;
   GLuint m_depthStencilRbo = 0;
+
+  // Framebuffer objects are container objects and are NOT shared between GL
+  // contexts (textures and renderbuffers are). Remember the creating thread so
+  // the FBO is only deleted from the context that owns it.
+  std::thread::id m_fboThread;
 
   void CreateTexture();
   void DeleteTexture();

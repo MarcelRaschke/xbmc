@@ -143,6 +143,7 @@ bool CRenderBufferOpenGLES::CreateFramebuffer()
   CreateTexture();
 
   glGenFramebuffers(1, &m_fboId);
+  m_fboThread = std::this_thread::get_id();
   glBindFramebuffer(GL_FRAMEBUFFER, m_fboId);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, m_textureTarget, m_textureId, 0);
 
@@ -195,7 +196,13 @@ void CRenderBufferOpenGLES::DeleteFramebuffer()
 
   if (m_fboId != 0)
   {
-    glDeleteFramebuffers(1, &m_fboId);
+    // Only delete from the context that created the FBO. Deleting the name from
+    // another context (e.g. the render thread during a flush) could destroy an
+    // unrelated framebuffer that happens to share the same name there. The
+    // owning context reclaims it when it is destroyed.
+    if (std::this_thread::get_id() == m_fboThread)
+      glDeleteFramebuffers(1, &m_fboId);
+
     m_fboId = 0;
   }
 }

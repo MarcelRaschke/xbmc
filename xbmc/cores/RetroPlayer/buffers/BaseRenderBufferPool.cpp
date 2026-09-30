@@ -12,6 +12,7 @@
 #include "cores/RetroPlayer/rendering/VideoRenderers/RPBaseRenderer.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <mutex>
 
 using namespace KODI;
@@ -92,6 +93,21 @@ IRenderBuffer* CBaseRenderBufferPool::GetBuffer(unsigned int width, unsigned int
 
     if (renderBuffer == nullptr)
     {
+      // Hardware rendering with dynamic resolution: the core requested a new
+      // size, so free buffers of any other size can no longer be recycled and
+      // would otherwise accumulate. GetBuffer() runs on the game-loop thread
+      // with the shared GL context current, where their FBOs can be deleted.
+      if (m_format == AV_PIX_FMT_NONE)
+      {
+        m_free.erase(std::remove_if(m_free.begin(), m_free.end(),
+                                    [width, height](const std::unique_ptr<IRenderBuffer>& buffer)
+                                    {
+                                      return buffer->GetWidth() != width ||
+                                             buffer->GetHeight() != height;
+                                    }),
+                     m_free.end());
+      }
+
       CLog::Log(LOGDEBUG,
                 "RetroPlayer[RENDER]: Creating render buffer of size {}x{} for buffer pool", width,
                 height);
