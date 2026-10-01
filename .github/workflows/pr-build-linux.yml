@@ -56,9 +56,13 @@ jobs:
       - name: Configure
         # Internal FFmpeg is built because Kodi requires a specific FFmpeg
         # version not provided by the distro packages (matches sonarqube.yml).
+        #
+        # Use the default generator (Unix Makefiles, as in docs/README.Linux.md),
+        # not Ninja: the internally built dependencies (crossguid, fmt, spdlog,
+        # fstrcmp) do not declare BUILD_BYPRODUCTS, so Ninja fails with
+        # "build/lib/libcrossguid.a ... missing and no known rule to make it".
         run: |
           cmake -S . -B build \
-            -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCORE_PLATFORM_NAME=x11 \
             -DAPP_RENDER_SYSTEM=gl \
