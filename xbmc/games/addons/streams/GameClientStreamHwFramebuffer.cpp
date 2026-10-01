@@ -50,6 +50,10 @@ void CGameClientStreamHwFramebuffer::CloseStream()
 {
   if (m_stream != nullptr)
   {
+    // Let the core free its GPU resources (with the GL context current) before
+    // Kodi tears down the rendering stream and its framebuffer.
+    m_callback.HardwareContextDestroy();
+
     m_stream->CloseStream();
     m_stream = nullptr;
   }
@@ -65,7 +69,10 @@ bool CGameClientStreamHwFramebuffer::GetBuffer(unsigned int width,
   if (m_stream != nullptr)
   {
     RETRO::HwFramebufferBuffer hwFramebufferBuffer;
-    if (m_stream->GetStreamBuffer(0, 0, static_cast<RETRO::StreamBuffer&>(hwFramebufferBuffer)))
+    // Pass the size requested by the core so the framebuffer matches its current
+    // resolution. The core may change this at any time (dynamic resolution).
+    if (m_stream->GetStreamBuffer(width, height,
+                                  static_cast<RETRO::StreamBuffer&>(hwFramebufferBuffer)))
     {
       buffer.hw_framebuffer.framebuffer = hwFramebufferBuffer.framebuffer;
       return true;

@@ -260,7 +260,21 @@ void CRPRendererOpenGLES::Render(uint8_t alpha)
       m_lastTargetHeight = m_fullDestHeight;
     }
 
-    const auto it = m_RBTexturesMap.find(renderBuffer);
+    auto it = m_RBTexturesMap.find(renderBuffer);
+    if (it != m_RBTexturesMap.end())
+    {
+      // With dynamic resolution a buffer address can be recycled for a buffer of
+      // a different size or texture; drop the stale cached source texture.
+      const auto& cachedSource = it->second->sourceTexture;
+      if (cachedSource->GetTextureID() != renderBuffer->TextureID() ||
+          cachedSource->GetWidth() != static_cast<float>(renderBuffer->GetWidth()) ||
+          cachedSource->GetHeight() != static_cast<float>(renderBuffer->GetHeight()))
+      {
+        m_RBTexturesMap.erase(it);
+        it = m_RBTexturesMap.end();
+      }
+    }
+
     if (it != m_RBTexturesMap.end())
     {
       rbTextures = it->second.get();
@@ -363,11 +377,16 @@ void CRPRendererOpenGLES::Render(uint8_t alpha)
     vertex[i].z = 0.0f;
   }
 
-  // Setup texture coordinates
+  // Setup texture coordinates. Hardware-rendered FBOs have a bottom-left origin,
+  // so flip the vertical texture coordinates when presenting them.
+  const bool flipV = renderBuffer->IsHardware();
+  const float v1 = flipV ? rect.y2 : rect.y1;
+  const float v2 = flipV ? rect.y1 : rect.y2;
+
   vertex[0].u1 = vertex[3].u1 = rect.x1;
-  vertex[0].v1 = vertex[1].v1 = rect.y1;
+  vertex[0].v1 = vertex[1].v1 = v1;
   vertex[1].u1 = vertex[2].u1 = rect.x2;
-  vertex[2].v1 = vertex[3].v1 = rect.y2;
+  vertex[2].v1 = vertex[3].v1 = v2;
 
   glBindBuffer(GL_ARRAY_BUFFER, m_mainVertexVBO);
   glBufferData(GL_ARRAY_BUFFER, sizeof(PackedVertex) * 4, &vertex[0], GL_DYNAMIC_DRAW);
