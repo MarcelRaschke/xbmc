@@ -39,6 +39,7 @@
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/log.h"
+#include "windowing/WinSystem.h"
 
 #include <algorithm>
 #include <cstring>
@@ -46,6 +47,52 @@
 #include <memory>
 #include <mutex>
 #include <utility>
+
+namespace
+{
+// Tracks whether Kodi's shared hardware-rendering GL context is already current
+// on the calling thread, so nested scopes (e.g. HardwareContextReset invoked
+// from within RunFrame) don't release it prematurely.
+thread_local bool tls_hwContextBound = false;
+
+//! \brief RAII helper that makes Kodi's shared GL upload context current on the
+//! calling (game-loop) thread for the duration of a hardware-rendering core's
+//! GL calls. The context shares objects with the main render context, so FBOs
+//! and textures the core creates remain visible to the render thread.
+class CHwContextScope
+{
+public:
+  explicit CHwContextScope(bool enabled)
+  {
+    if (!enabled || tls_hwContextBound)
+      return;
+
+    CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
+    if (winSystem != nullptr && winSystem->BindTextureUploadContext())
+    {
+      tls_hwContextBound = true;
+      m_bound = true;
+    }
+  }
+
+  ~CHwContextScope()
+  {
+    if (!m_bound)
+      return;
+
+    CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
+    if (winSystem != nullptr)
+      winSystem->UnbindTextureUploadContext();
+    tls_hwContextBound = false;
+  }
+
+  CHwContextScope(const CHwContextScope&) = delete;
+  CHwContextScope& operator=(const CHwContextScope&) = delete;
+
+private:
+  bool m_bound = false;
+};
+} // namespace
 
 using namespace KODI;
 using namespace GAME;
@@ -548,6 +595,12 @@ void CGameClient::RunFrame()
   {
     try
     {
+      // For hardware rendering, make Kodi's shared GL context current on this
+      // (game-loop) thread so the core's GL calls -- including its context_reset
+      // and rendering into the FBO returned by GetCurrentFramebuffer() -- run
+      // against a valid context that shares objects with the render thread.
+      CHwContextScope hwContext(m_hwRendering);
+
       LogError(m_ifc.game->toAddon->RunFrame(m_ifc.game), "RunFrame()");
       m_hasFrameRun = true;
     }
@@ -663,6 +716,10 @@ void CGameClient::LogException(const char* strFunctionName) const
 
 void CGameClient::HardwareContextReset()
 {
+  // Ensure the shared GL context is current while the core (re)creates its GPU
+  // resources. If this runs nested inside RunFrame() the scope is a no-op.
+  CHwContextScope hwContext(true);
+
   try
   {
     LogError(m_ifc.game->toAddon->HwContextReset(m_ifc.game), "HwContextReset()");
@@ -671,6 +728,26 @@ void CGameClient::HardwareContextReset()
   {
     LogException("HwContextReset()");
   }
+}
+
+void CGameClient::HardwareContextDestroy()
+{
+  // Ensure the shared GL context is current while the core frees its GPU
+  // resources, mirroring HardwareContextReset().
+  {
+    CHwContextScope hwContext(true);
+
+    try
+    {
+      LogError(m_ifc.game->toAddon->HwContextDestroy(m_ifc.game), "HwContextDestroy()");
+    }
+    catch (...)
+    {
+      LogException("HwContextDestroy()");
+    }
+  }
+
+  m_hwRendering = false;
 }
 
 bool CGameClient::cb_enable_hardware_rendering(KODI_HANDLE kodiInstance,
@@ -683,7 +760,15 @@ bool CGameClient::cb_enable_hardware_rendering(KODI_HANDLE kodiInstance,
   if (gameClient == nullptr)
     return false;
 
-  return gameClient->Streams().EnableHardwareRendering(*properties);
+  const bool bSuccess = gameClient->Streams().EnableHardwareRendering(*properties);
+  if (bSuccess)
+  {
+    // Remember that the core uses hardware rendering so RunFrame() binds the
+    // shared GL context on the game-loop thread for the core's GL calls.
+    gameClient->m_hwRendering = true;
+  }
+
+  return bSuccess;
 }
 
 void CGameClient::cb_close_game(KODI_HANDLE kodiInstance)

@@ -35,6 +35,14 @@ public:
    * Any GL state is lost, and must not be deinitialized explicitly.
    */
   virtual void HardwareContextReset() = 0;
+
+  /*!
+   * \brief Notifies the core that its HW rendering context is being destroyed
+   *
+   * The core should release any GPU resources it created in
+   * HardwareContextReset(). Called with the GL context current.
+   */
+  virtual void HardwareContextDestroy() = 0;
 };
 
 class CGameClientStreamHwFramebuffer : public IGameClientStream
