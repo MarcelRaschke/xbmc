@@ -16,11 +16,20 @@
 #include "FileItem.h"
 #include "threads/CriticalSection.h"
 
-#include <compare>
 #include <map>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
+
+//! item property set by the video library scanner on subfolders whose fast hash matches
+//! the stored hash; Stack() skips the disc structure probes for such folders
+static constexpr const char* PROPERTY_UNCHANGED{"scanner:unchanged"};
+
+//! item property set by Stack() on a stack: a digest of what each of its parts is,
+//! to allow the scraper to detect changes to any part
+static constexpr const char* PROPERTY_STACK_DIGEST{"scanner:stackdigest"};
 
 /*!
   \brief Represents a list of files
@@ -47,8 +56,11 @@ public:
     StackCandidateType type;
     std::string title;
     std::string volume;
+    std::string remainder; // the part of the name after the volume, excluding the extension
     int64_t size;
     int index; // index in m_items
+    std::string playPath; // for a folder candidate: the file inside the folder
+    std::string pattern; // the stack expression that matched, for logging
 
     auto operator<=>(const StackCandidate&) const = default;
   };
@@ -57,6 +69,7 @@ public:
   {
     StackCandidateType type;
     std::string title;
+    std::string remainder;
 
     auto operator<=>(const CountedStackCandidate& other) const = default;
   };
@@ -199,8 +212,30 @@ public:
   auto begin() const { return m_items.begin(); }
   auto end() const { return m_items.end(); }
 
-  using Iterator = std::vector<std::shared_ptr<CFileItem>>::iterator;
-  Iterator erase(Iterator first, Iterator last);
+  template<class Pred>
+  friend size_t erase_if(CFileItemList& list, Pred pred)
+  {
+    std::unique_lock lock(list.m_lock);
+    auto& items = list.m_items;
+    auto out = items.begin();
+    size_t count = 0;
+    for (auto it = items.begin(); it != items.end(); ++it)
+    {
+      if (pred(*it))
+        ++count;
+      else if (out != it)
+        *out++ = std::move(*it);
+      else
+        ++out;
+    }
+    items.erase(out, items.end());
+    if (count > 0 && list.m_fastLookup)
+    {
+      list.m_map.clear();
+      list.AddFastLookupItems(items);
+    }
+    return count;
+  }
 
   auto cbegin() const { return m_items.cbegin(); }
   auto cend() const { return m_items.cend(); }

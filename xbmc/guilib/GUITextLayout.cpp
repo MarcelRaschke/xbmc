@@ -55,6 +55,17 @@ void CGUITextLayout::SetWrap(bool bWrap)
   m_wrap = bWrap;
 }
 
+void CGUITextLayout::SetFont(CGUIFont* font)
+{
+  const bool usingMonoFont = m_font != nullptr && m_font == m_monoFont;
+  m_varFont = font;
+  m_font = usingMonoFont ? m_monoFont : font;
+
+  // invalidate the cached text so the next Update()/UpdateW() re-lays out using the new font
+  m_lastUtf8Text.clear();
+  m_lastText.clear();
+}
+
 void CGUITextLayout::Render(float x,
                             float y,
                             float angle,
@@ -485,17 +496,23 @@ void CGUITextLayout::ParseText(const std::wstring& text,
         --lightDepth;
       newStyle = FONT_STYLE_LIGHT;
     }
-    else if (text.compare(pos, 5, L"TABS]") == 0 && on)
+    else if (text.compare(pos, 5, L"TABS]") == 0)
     {
       pos += 5;
-      const size_t end = text.find(L"[/TABS]", pos);
-      if (end != std::wstring::npos)
+      if (on)
       {
-        std::string t;
-        g_charsetConverter.wToUTF8(text.substr(pos), t);
-        tabs = atoi(t.c_str());
-        pos = end + 7;
+        const size_t end = text.find(L"[/TABS]", pos);
+        if (end != std::wstring::npos)
+        {
+          std::string t;
+          g_charsetConverter.wToUTF8(text.substr(pos, end - pos), t);
+          tabs = atoi(t.c_str());
+          pos = end + 7;
+        }
       }
+      // Equivalent of newStyle for other formatting tags to have the tag text discarded.
+      if (!tabs)
+        tabs = -1;
     }
     else if (text.compare(pos, 3, L"CR]") == 0 && on)
     {

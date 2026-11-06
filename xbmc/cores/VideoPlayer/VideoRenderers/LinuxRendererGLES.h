@@ -26,7 +26,6 @@ extern "C" {
 #include <libavutil/pixdesc.h>
 }
 
-class CRenderCapture;
 class CRenderSystemGLES;
 
 class CTexture;
@@ -73,11 +72,10 @@ public:
   bool Flush(bool saveBuffers) override;
   void SetBufferSize(int numBuffers) override { m_NumYUVBuffers = numBuffers; }
   bool IsGuiLayer() override;
-  bool HasVideoPlane() override { return false; }
+  bool VideoBypassesFramebuffer() override { return false; }
   void ReleaseBuffer(int idx) override;
   void RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha) override;
   void Update() override;
-  bool RenderCapture(int index, CRenderCapture* capture) override;
   CRenderInfo GetRenderInfo() override;
   bool ConfigChanged(const VideoPicture& picture) override;
 
@@ -85,8 +83,6 @@ public:
   bool SupportsMultiPassRendering() override;
   bool Supports(ERENDERFEATURE feature) const override;
   bool Supports(ESCALINGMETHOD method) const override;
-
-  CRenderCapture* GetRenderCapture() override;
 
 protected:
   // Returns 0 if scaling is below hqscalers threshold.
@@ -230,6 +226,7 @@ protected:
   size_t m_planeBufferSize = 0;
 
   CRect m_lastViewRect;
+  CRect m_lastSourceRect;
 
   // HDR FBO compositing: when active, IsGuiLayer() returns false so
   // video renders separately from GUI via RenderUpdateVideo()

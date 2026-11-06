@@ -50,6 +50,7 @@ class CGUIWindowManager : public KODI::MESSAGING::IMessageTarget
 {
   friend CGUIDialog;
   friend CGUIMediaWindow;
+
 public:
   CGUIWindowManager();
   ~CGUIWindowManager() override;
@@ -131,6 +132,14 @@ public:
    \return true if the window manager is initialized, false otherwise.
    */
   bool Initialized() const { return m_initialized; }
+
+  /*! \brief Return whether a nested render loop is currently running.
+   A modal dialog pumps the application from its own Open() loop, leaving the GUI
+   message handlers below it suspended while still holding pointers into the control
+   tree. Destroying windows or controls has to wait until the stack has unwound.
+   \return true if called from within a nested render loop, false otherwise.
+   */
+  bool IsNested() const { return m_iNested > 0; }
 
   /*! \brief Create and initialize all windows and dialogs
    */

@@ -56,6 +56,8 @@ jobs:
       - name: Configure
         # Internal FFmpeg is built because Kodi requires a specific FFmpeg
         # version not provided by the distro packages (matches sonarqube.yml).
+        # Internal SWIG is built because the python bindings need SWIG 4.5.0 or
+        # newer and the runner image ships 4.4.0.
         #
         # Use the default generator (Unix Makefiles, as in docs/README.Linux.md),
         # not Ninja: the internally built dependencies (crossguid, fmt, spdlog,
@@ -67,6 +69,7 @@ jobs:
             -DCORE_PLATFORM_NAME=x11 \
             -DAPP_RENDER_SYSTEM=gl \
             -DENABLE_INTERNAL_FFMPEG=ON \
+            -DENABLE_INTERNAL_SWIG=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 

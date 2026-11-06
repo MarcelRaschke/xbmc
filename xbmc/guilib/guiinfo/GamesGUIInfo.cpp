@@ -18,7 +18,12 @@
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
 #include "cores/RetroPlayer/RetroPlayerUtils.h"
+#include "games/AchievementRuntime.h"
+#include "games/GameServices.h"
+#include "games/GameSettings.h"
+#include "games/GameUtils.h"
 #include "games/addons/GameClient.h"
+#include "games/addons/cheats/GameClientCheats.h"
 #include "games/tags/GameInfoTag.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/guiinfo/GUIInfo.h"
@@ -64,6 +69,14 @@ const CGameInfoTag* GetGUIGameTag()
 
 //! @todo Savestates were removed from v18
 //#define FILEITEM_PROPERTY_SAVESTATE_DURATION  "duration"
+
+const CAchievementRuntime& CGamesGUIInfo::AchievementRuntime() const
+{
+  if (m_achievementRuntime)
+    return *m_achievementRuntime;
+
+  return CServiceBroker::GetGameServices().AchievementRuntime();
+}
 
 bool CGamesGUIInfo::InitCurrentItem(CFileItem* item)
 {
@@ -222,6 +235,78 @@ bool CGamesGUIInfo::GetLabel(std::string& value,
 
       return true;
     }
+    case RETROPLAYER_RICH_PRESENCE:
+    {
+      value = AchievementRuntime().GetRichPresence();
+      return true;
+    }
+    case RETROPLAYER_ACHIEVEMENTS_PROGRESS:
+    {
+      const CAchievementRuntime& runtime = AchievementRuntime();
+      const unsigned int total = runtime.GetTotalAchievements();
+
+      // An empty label lets skins hide the control instead of showing "0 / 0"
+      if (total == 0)
+        value.clear();
+      else
+        value = StringUtils::Format("{} / {}", runtime.GetUnlockedAchievements(), total);
+
+      return true;
+    }
+    case RETROPLAYER_ACHIEVEMENTS_CHALLENGE_TITLE:
+    case RETROPLAYER_ACHIEVEMENTS_CHALLENGE_BADGE:
+    {
+      // Answered empty rather than never recorded, so that turning it off while
+      // an attempt is live takes the indicator off screen at once
+      if (!CServiceBroker::GetGameServices().GameSettings().GetChallengeIndicator())
+      {
+        value.clear();
+        return true;
+      }
+
+      const AchievementChallenge challenge = AchievementRuntime().GetShownChallenge();
+
+      value = (info.GetInfo() == RETROPLAYER_ACHIEVEMENTS_CHALLENGE_TITLE) ? challenge.title
+                                                                           : challenge.badgeUrl;
+      return true;
+    }
+    case RETROPLAYER_LEADERBOARD_TRACKER:
+    {
+      value = AchievementRuntime().GetShownLeaderboardTracker().display;
+      return true;
+    }
+    case RETROPLAYER_ACHIEVEMENTS_INDICATOR_TITLE:
+    case RETROPLAYER_ACHIEVEMENTS_INDICATOR_BADGE:
+    case RETROPLAYER_ACHIEVEMENTS_INDICATOR_PROGRESS:
+    case RETROPLAYER_ACHIEVEMENTS_INDICATOR_PERCENT:
+    {
+      const AchievementProgressIndicator indicator = AchievementRuntime().GetProgressIndicator();
+
+      // The title being empty is what keeps the whole indicator hidden, so
+      // every field of an inactive one must come back empty rather than "0"
+      if (indicator.id == 0)
+      {
+        value.clear();
+        return true;
+      }
+
+      switch (info.GetInfo())
+      {
+        case RETROPLAYER_ACHIEVEMENTS_INDICATOR_TITLE:
+          value = indicator.title;
+          break;
+        case RETROPLAYER_ACHIEVEMENTS_INDICATOR_BADGE:
+          value = indicator.badgeUrl;
+          break;
+        case RETROPLAYER_ACHIEVEMENTS_INDICATOR_PROGRESS:
+          value = indicator.measuredProgress;
+          break;
+        default:
+          value = std::to_string(static_cast<int>(indicator.measuredPercent));
+          break;
+      }
+      return true;
+    }
     default:
       break;
   }
@@ -272,6 +357,23 @@ bool CGamesGUIInfo::GetBool(bool& value,
 
       value = appPlayer && appPlayer->IsTrayEmpty();
 
+      return true;
+    }
+    case RETROPLAYER_ACHIEVEMENTS_LOGGED_IN:
+    {
+      value = CServiceBroker::GetGameServices().GameSettings().GetAchievementsLoggedIn();
+      return true;
+    }
+    case RETROPLAYER_SUPPORTS_CHEATS:
+    {
+      const GameClientPtr gameClient = CGameUtils::GetPlayingGameClient();
+      value = gameClient && gameClient->Cheats().SupportsCheats();
+      return true;
+    }
+    case RETROPLAYER_HAS_CHEATS:
+    {
+      const GameClientPtr gameClient = CGameUtils::GetPlayingGameClient();
+      value = gameClient && gameClient->Cheats().HasCheats();
       return true;
     }
     default:

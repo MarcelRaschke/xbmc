@@ -12,8 +12,10 @@ else()
                 )
 endif()
 
+set(env_vars ${EXTRA_ENV_VARS})
+
 if(CROSSCOMPILING)
-  set(pkgconf "PKG_CONFIG_LIBDIR=${DEPENDS_PATH}/lib/pkgconfig")
+  list(APPEND env_vars "PKG_CONFIG_LIBDIR=${DEPENDS_PATH}/lib/pkgconfig")
   list(APPEND ffmpeg_conf --pkg-config=${PKG_CONFIG_EXECUTABLE}
                           --pkg-config-flags=--static
                           --enable-cross-compile
@@ -21,6 +23,10 @@ if(CROSSCOMPILING)
                           --ar=${CMAKE_AR}
                           --ranlib=${CMAKE_RANLIB}
                           --strip=${CMAKE_STRIP}
+                          --host-cc=${CC_FOR_BUILD}
+                          --host-ld=${CC_FOR_BUILD}
+                          "--host-cflags=${CFLAGS_FOR_BUILD}"
+                          "--host-ldflags=${LDFLAGS_FOR_BUILD}"
               )
 
   message(STATUS "CROSS: ${ffmpeg_conf}")
@@ -34,6 +40,8 @@ list(APPEND ffmpeg_conf --disable-doc
                         --disable-sdl2
                         --disable-vulkan
                         --enable-gpl
+                        --enable-version3
+                        --enable-openssl
                         --enable-runtime-cpudetect
                         --enable-pthreads
                         --extra-version="Kodi"
@@ -111,11 +119,6 @@ elseif(CPU MATCHES mips)
   list(APPEND ffmpeg_conf --disable-mips32r2 --disable-mipsdsp --disable-mipsdspr2)
 endif()
 
-find_package(GnuTLS)
-if(GNUTLS_FOUND)
-  list(APPEND ffmpeg_conf --enable-gnutls)
-endif()
-
 if(CPU MATCHES x86 OR CPU MATCHES x86_64)
   find_package(NASM REQUIRED)
   list(APPEND ffmpeg_conf --x86asmexe=${NASM_EXECUTABLE})
@@ -127,7 +130,7 @@ endif()
 
 if(ENABLE_DAV1D)
   list(APPEND ffmpeg_conf --enable-libdav1d)
-  set(pkgconf_path "PKG_CONFIG_PATH=${PKG_CONFIG_PATH}")
+  list(APPEND env_vars "PKG_CONFIG_PATH=${PKG_CONFIG_PATH}")
 else()
   list(APPEND ffmpeg_conf --disable-libdav1d)
 endif()
@@ -156,12 +159,13 @@ if(NOT DISABLE_FFMPEG_SOURCE_PLUGINS)
 else()
   set(sourceplugin_patch PATCH_COMMAND patch -p1 -i <SOURCE_DIR>/002-ffmpeg-libavutil-common-h-cpp11-constant-macros.patch)
 endif()
+list(APPEND sourceplugin_patch COMMAND patch -p1 -i <SOURCE_DIR>/008-ffmpeg-all-pgssubdec-use-caller-colorspace.patch)
 
 include(ExternalProject)
 externalproject_add(ffmpeg
                     SOURCE_DIR ${CMAKE_SOURCE_DIR}
                     ${sourceplugin_patch}
-                    CONFIGURE_COMMAND ${pkgconf} ${pkgconf_path} <SOURCE_DIR>/configure
+                    CONFIGURE_COMMAND ${env_vars} <SOURCE_DIR>/configure
                       --prefix=${CMAKE_INSTALL_PREFIX}
                       --extra-version="kodi-${FFMPEG_VER}"
                       ${ffmpeg_conf}

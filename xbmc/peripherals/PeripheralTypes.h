@@ -81,6 +81,22 @@ enum PeripheralType
   PERIPHERAL_MOUSE,
 };
 
+/*!
+ * \brief Power status of the device attached via HDMI-CEC.
+ *
+ * This is the result of calling libCEC's GetDevicePowerStatus. UNKNOWN means the device could not
+ * be found or queried on the CEC bus. NO_ADAPTER means no CEC adapter is present.
+ */
+enum class CecPowerStatus
+{
+  NO_ADAPTER = -1, //!< no CEC adapter present, or libCEC not built
+  ON = 0,
+  STANDBY = 1,
+  TRANSITION_TO_ON = 2,
+  TRANSITION_TO_STANDBY = 3,
+  UNKNOWN = 4,
+};
+
 class CPeripheral;
 using PeripheralPtr = std::shared_ptr<CPeripheral>;
 using PeripheralVector = std::vector<PeripheralPtr>;
@@ -345,10 +361,16 @@ public:
 
   PeripheralType m_type = PERIPHERAL_UNKNOWN;
   std::string m_strLocation;
+  // Stable physical/topology location, used to key per-adapter settings. Empty if unavailable.
+  std::string m_strPhysicalLocation;
   int m_iVendorId = 0;
   int m_iProductId = 0;
   PeripheralType m_mappedType = PERIPHERAL_UNKNOWN;
   std::string m_strDeviceName;
+  // Generic name from the peripherals.xml mapping. Kept separate from m_strDeviceName,
+  // which a bus may override with a per-adapter name, so a settings file keyed by the
+  // generic name can still be found.
+  std::string m_strMappedDeviceName;
   PeripheralBusType m_busType = PERIPHERAL_BUS_UNKNOWN;
   PeripheralBusType m_mappedBusType = PERIPHERAL_BUS_UNKNOWN;
   unsigned int m_iSequence = 0; // when more than one adapter of the same type is found

@@ -38,6 +38,7 @@
 #include "guilib/GUIWindowManager.h"
 #include "imagefiles/ImageFileURL.h"
 #include "interfaces/AnnouncementManager.h"
+#include "music/AudioType.h"
 #include "music/MusicFileItemClassify.h"
 #include "music/MusicLibraryQueue.h"
 #include "music/MusicThumbLoader.h"
@@ -73,7 +74,6 @@ using KODI::UTILITY::CDigest;
 CMusicInfoScanner::CMusicInfoScanner()
 : m_fileCountReader(this, "MusicFileCounter")
 {
-  m_bStop = false;
   m_currentItem=0;
   m_itemCount=0;
   m_flags = 0;
@@ -83,7 +83,6 @@ CMusicInfoScanner::~CMusicInfoScanner() = default;
 
 void CMusicInfoScanner::Process()
 {
-  m_bStop = false;
   CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::AudioLibrary, "OnScanStarted");
   try
   {
@@ -99,7 +98,8 @@ void CMusicInfoScanner::Process()
     // check if we only need to perform a cleaning
     if (m_bClean && m_pathsToScan.empty())
     {
-      CMusicLibraryQueue::GetInstance().CleanLibrary(false);
+      if (!m_bStop)
+        CMusicLibraryQueue::GetInstance().CleanLibrary(false);
       m_handle = NULL;
       m_bRunning = false;
 
@@ -992,8 +992,7 @@ int CMusicInfoScanner::RetrieveMusicInfo(const std::string& strDirectory, CFileI
 
     // mark albums without a title as singles
     if (album.strAlbum.empty())
-      album.releaseType = ReleaseType::Single;
-
+      album.releaseType = AudioType::Type::Single;
     album.strPath = strDirectory;
     m_musicDatabase.AddAlbum(album, m_idSourcePath);
     m_albumsAdded.insert(album.idAlbum);

@@ -20,7 +20,6 @@
 #include <utility>
 
 using namespace KODI;
-using namespace KODI::UTILS::I18N;
 
 CServiceBroker::CServiceBroker()
 {
@@ -418,6 +417,22 @@ std::shared_ptr<CJobManager> CServiceBroker::GetJobManager()
   return g_serviceBroker.m_jobManager;
 }
 
+void CServiceBroker::RegisterCaptureService(
+    const std::shared_ptr<KODI::RENDERING::CAPTURE::CCaptureService>& captureService)
+{
+  g_serviceBroker.m_captureService = captureService;
+}
+
+void CServiceBroker::UnregisterCaptureService()
+{
+  g_serviceBroker.m_captureService.reset();
+}
+
+std::shared_ptr<KODI::RENDERING::CAPTURE::CCaptureService> CServiceBroker::GetCaptureService()
+{
+  return g_serviceBroker.m_captureService;
+}
+
 void CServiceBroker::RegisterAppMessenger(
     const std::shared_ptr<KODI::MESSAGING::CApplicationMessenger>& appMessenger)
 {
@@ -496,7 +511,3 @@ std::shared_ptr<XFILE::CBlurayDiscCache> CServiceBroker::GetBlurayDiscCache()
   return g_serviceBroker.m_blurayDiscCache;
 }
 
-CSubTagRegistryManager& CServiceBroker::GetSubTagRegistry()
-{
-  return g_application.m_ServiceManager->GetSubTagRegistryManager();
-}

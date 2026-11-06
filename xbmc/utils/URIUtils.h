@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2005-2018 Team Kodi
+ *  Copyright (C) 2005-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -45,6 +45,10 @@ public:
 
   static std::string GetFileName(const CURL& url);
   static std::string GetFileName(const std::string& strFileNameAndPath);
+
+  /*! rief The file name with any percent escapes resolved, as a label carries it. */
+  static std::string GetDecodedFileName(const CURL& url);
+  static std::string GetDecodedFileName(const std::string& strFileNameAndPath);
   static std::string GetFileOrFolderName(std::string_view path);
 
   static std::string GetExtension(const CURL& url);
@@ -160,9 +164,11 @@ public:
 
   /*! \brief Given a path to an .ISO or index.BDMV, returns a bluray:// path to main title.
    \param path the ISO/index.BDMV path.
+   \param getAllTitles whether to get a single title or those within 70% of longest (most likely to be movies/episodes)
    \return the bluray:// root/main path.
    */
-  static std::string GetBlurayMainTitlePath(const std::string& path);
+  static std::string GetBlurayMainTitlePath(const std::string& path,
+                                            GetAllTitles getAllTitles = GetAllTitles::LONG);
 
   /*! \brief Given a path to an .ISO or index.BDMV, returns a bluray:// path to a given episode.
    \param path the ISO/index.BDMV path.
@@ -290,9 +296,10 @@ public:
   static bool IsSmb(const std::string& strFile);
   static bool IsSpecial(const std::string& strFile);
   static bool IsStack(const std::string& strFile);
+  static bool IsContainerPath(const std::string& strFile);
   static bool IsFavourite(const std::string& strFile);
   static bool IsUPnP(const std::string& strFile);
-  static bool IsURL(const std::string& strFile);
+  static bool IsURL(std::string_view file);
   static bool IsVideoDb(const std::string& strFile);
   static bool IsAPK(const std::string& strFile);
   static bool IsZIP(const std::string& strFile);
@@ -322,7 +329,7 @@ public:
 
   static std::string AppendSlash(std::string strFolder);
   static void AddSlashAtEnd(std::string& strFolder);
-  static bool HasSlashAtEnd(const std::string& strFile, bool checkURL = false);
+  static bool HasSlashAtEnd(std::string_view file, bool checkURL = false);
   static void RemoveSlashAtEnd(std::string& strFolder);
   static bool CompareWithoutSlashAtEnd(const std::string& strPath1, const std::string& strPath2);
   static std::string FixSlashesAndDups(const std::string& path, const char slashCharacter = '/', const size_t startFrom = 0);
@@ -353,6 +360,21 @@ public:
     auto newPath = AddFileToFolder(strFolder, strFile);
     return AddFileToFolder(newPath, args...);
   }
+
+  /*!
+   \brief Append a segment to a folder, matching the folder's filename encoding.
+
+   Sources whose paths keep the filename portion percent-encoded (WebDAV, http, ...)
+   cannot resolve a path built by appending a raw, human readable segment, because the
+   result ends up with mixed encoding. This helper percent-encodes \p strFile when
+   \p strFolder reports an encoded filename and appends it verbatim otherwise.
+
+   \param strFolder base folder, either a local path or a URL
+   \param strFile raw (unencoded) segment to append
+   \return the combined path, consistently encoded
+   */
+  static std::string AddFileToFolderMatchingEncoding(const std::string& strFolder,
+                                                     const std::string& strFile);
 
   static bool HasParentInHostname(const CURL& url);
   static bool HasEncodedHostname(const CURL& url);
@@ -398,6 +420,8 @@ public:
    \return Updated path
    */
   static std::string SanitiseUrlEncoding(std::string_view path);
+
+  static std::string GetDecodedPath(const std::string& path);
 
 private:
   static std::string resolvePath(const std::string &path);

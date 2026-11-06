@@ -37,7 +37,7 @@ public:
   /*!
    * @brief Create a new instance of the PVR database.
    */
-  CPVRDatabase() = default;
+  CPVRDatabase();
   ~CPVRDatabase() override = default;
 
   /*!
@@ -274,7 +274,7 @@ public:
 
   /*!
    * @brief Add or update a timer entry in the database
-   * @param channel The timer to persist.
+   * @param timer The timer to persist.
    * @return True if persisted, false otherwise.
    */
   bool Persist(CPVRTimerInfoTag& timer);

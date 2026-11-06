@@ -27,6 +27,7 @@
 #include "guilib/GUIRadioButtonControl.h"
 #include "guilib/GUISliderControl.h"
 #include "guilib/GUITextBox.h"
+#include "guilib/GUIVideoControl.h"
 #include "guilib/GUIWindowManager.h"
 #include "guilib/listproviders/StaticProvider.h"
 #include "utils/StringUtils.h"
@@ -551,6 +552,30 @@ namespace XBMCAddon
                                          (float) dwPosY,
                                          (float) dwWidth,
                                          (float) dwHeight);
+      pGUIControl->SetVisible(m_visible);
+      return pGUIControl;
+    }
+
+    // ============================================================
+
+    // ============================================================
+    // ============================================================
+    ControlVideoWindow::ControlVideoWindow(long x, long y, long width, long height)
+    {
+      dwPosX = x;
+      dwPosY = y;
+      dwWidth = width;
+      dwHeight = height;
+    }
+
+    CGUIControl* ControlVideoWindow::Create()
+    {
+      pGUIControl = new CGUIVideoControl(iParentId,
+                                          iControlId,
+                                          (float)dwPosX,
+                                          (float)dwPosY,
+                                          (float)dwWidth,
+                                          (float)dwHeight);
       pGUIControl->SetVisible(m_visible);
       return pGUIControl;
     }
@@ -1155,18 +1180,32 @@ namespace XBMCAddon
     // ============================================================
     //  ControlList
     // ============================================================
-    ControlList::ControlList(long x, long y, long width, long height, const char* font,
-                             const char* ctextColor, const char* cbuttonTexture,
+    ControlList::ControlList(long x,
+                             long y,
+                             long width,
+                             long height,
+                             const char* font,
+                             const char* ctextColor,
+                             const char* cbuttonTexture,
                              const char* cbuttonFocusTexture,
                              const char* cselectedColor,
-                             long _imageWidth, long _imageHeight, long _itemTextXOffset,
-                             long _itemTextYOffset, long _itemHeight, long _space, long _alignmentY) :
-      strFont("font13"),
-      textColor(0xe0f0f0f0), selectedColor(0xffffffff),
-      imageHeight(_imageHeight), imageWidth(_imageWidth),
-      itemHeight(_itemHeight), space(_space),
-      itemTextOffsetX(_itemTextXOffset),itemTextOffsetY(_itemTextYOffset),
-      alignmentY(_alignmentY)
+                             long _imageWidth,
+                             long _imageHeight,
+                             long _itemTextXOffset,
+                             long _itemTextYOffset,
+                             long _itemHeight,
+                             long _space,
+                             long _alignmentY)
+      : strFont("font13"),
+        textColor(0xe0f0f0f0),
+        selectedColor(0xffffffff),
+        imageHeight(static_cast<int>(_imageHeight)),
+        imageWidth(static_cast<int>(_imageWidth)),
+        itemHeight(static_cast<int>(_itemHeight)),
+        space(static_cast<int>(_space)),
+        itemTextOffsetX(static_cast<int>(_itemTextXOffset)),
+        itemTextOffsetY(static_cast<int>(_itemTextYOffset)),
+        alignmentY(_alignmentY)
     {
       dwPosX = x;
       dwPosY = y;

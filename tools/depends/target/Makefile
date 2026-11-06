@@ -16,7 +16,6 @@ DEPENDS = \
   gettext \
   gmp \
   gnutls \
-  gtest \
   harfbuzz \
   libffi \
   libgcrypt \
@@ -44,8 +43,8 @@ else
 endif
 
 ifeq ($(OS),darwin_embedded)
-  EXCLUDED_DEPENDS = libusb gtest libcdio libcdio-gplv3
-  ifeq ($(TARGET_PLATFORM),appletvos)
+  EXCLUDED_DEPENDS = libusb libcdio libcdio-gplv3
+  ifeq ($(findstring appletv,$(TARGET_PLATFORM)),appletv)
     EXCLUDED_DEPENDS += libshairplay libplist
   endif
   DEPENDS += darwin-embedded-entitlements
@@ -60,7 +59,7 @@ ifeq ($(OS),osx)
 endif
 
 ifeq ($(OS),android)
-  EXCLUDED_DEPENDS = libusb gtest libcdio libcdio-gplv3
+  EXCLUDED_DEPENDS = libusb libcdio libcdio-gplv3
   DEPENDS += dummy-libxbmc libdovi libuuid
   PYMODULE_DEPS = dummy-libxbmc
   LIBUUID = libuuid
@@ -151,12 +150,11 @@ $(DOWNLOAD_TARGETS):
 
 download: $(DOWNLOAD_TARGETS)
 
-cec: p8-platform
 crossguid: $(LIBUUID)
 curl: brotli openssl nghttp2 $(ZLIB)
 dbus: expat
 exiv2: $(ICONV) $(ZLIB) expat
-ffmpeg: $(ICONV) $(ZLIB) bzip2 gnutls dav1d $(LIBVA)
+ffmpeg: $(ICONV) $(ZLIB) bzip2 openssl dav1d $(LIBVA)
 fontconfig: freetype2 expat $(ICONV) $(LIBUUID)
 freetype2: bzip2 harfbuzz $(ZLIB)
 gettext: $(ICONV)

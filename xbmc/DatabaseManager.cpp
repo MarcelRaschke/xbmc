@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2012-2018 Team Kodi
+ *  Copyright (C) 2012-2026 Team Kodi
  *  This file is part of Kodi - https://kodi.tv
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
@@ -11,6 +11,7 @@
 #include "ServiceBroker.h"
 #include "TextureDatabase.h"
 #include "addons/AddonDatabase.h"
+#include "games/database/GameDatabase.h"
 #include "music/MusicDatabase.h"
 #include "pvr/PVRDatabase.h"
 #include "pvr/epg/EpgDatabase.h"
@@ -44,6 +45,8 @@ bool CDatabaseManager::Initialize()
   if (m_initialized)
     return false;
 
+  m_dbDetails.clear();
+
   const bool rc = InitializeInternal();
 
   m_bIsUpgrading = false;
@@ -59,7 +62,7 @@ void CDatabaseManager::Deinitialize()
   m_initialized = false;
   m_bIsUpgrading = false;
   m_connecting = false;
-  m_dbStatus.clear();
+  m_dbDetails.clear();
 }
 
 bool CDatabaseManager::InitializeInternal()
@@ -69,10 +72,16 @@ bool CDatabaseManager::InitializeInternal()
   const std::shared_ptr<CAdvancedSettings> advancedSettings =
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
 
-  // NOTE: CAddonDatabase initialized in the constructor
+  // Ensure the addon database is ready for the current profile by running
+  // its update procedure, just like the other databases.
+  if (ADDON::CAddonDatabase db; !UpdateDatabase(db))
+    return false;
+
   // NOTE: Order here is important. In particular, CTextureDatabase has to be updated
   //       before CVideoDatabase.
   if (CViewDatabase db; !UpdateDatabase(db))
+    return false;
+  if (KODI::GAME::CGameDatabase db; !UpdateDatabase(db))
     return false;
   if (CTextureDatabase db; !UpdateDatabase(db))
     return false;
@@ -92,10 +101,26 @@ bool CDatabaseManager::InitializeInternal()
 bool CDatabaseManager::CanOpen(const std::string &name)
 {
   std::unique_lock lock(m_section);
-  const auto i = m_dbStatus.find(name);
-  if (i != m_dbStatus.end())
-    return i->second == DBStatus::READY;
+  const auto it{m_dbDetails.find(name)};
+  if (it != m_dbDetails.cend())
+    return (*it).second.m_status == DBStatus::READY;
+
   return false; // db isn't even attempted to update yet
+}
+
+std::string CDatabaseManager::GetDatabaseNameByType(std::string_view dbType) const
+{
+  if (dbType.empty())
+    return {};
+
+  std::unique_lock lock(m_section);
+
+  const auto it{std::ranges::find_if(m_dbDetails, [&dbType](const auto& db)
+                                     { return db.second.m_type == dbType; })};
+  if (it != m_dbDetails.cend())
+    return (*it).second.m_name;
+
+  return {};
 }
 
 bool CDatabaseManager::UpdateDatabase(CDatabase& db, DatabaseSettings* settings)
@@ -168,7 +193,10 @@ bool CDatabaseManager::Update(CDatabase &db, const DatabaseSettings &settings)
 
       // yay - we have a copy of our db, now do our worst with it
       if (UpdateVersion(db, latestDb))
+      {
+        UpdateDetails(db.GetBaseDBName(), db.GetType(), latestDb);
         return true;
+      }
 
       // update failed - loop around and see if we have another one available
       db.Close();
@@ -179,7 +207,10 @@ bool CDatabaseManager::Update(CDatabase &db, const DatabaseSettings &settings)
   }
   // try creating a new one
   if (db.Connect(latestDb, dbSettings, true) == CDatabase::ConnectionState::STATE_CONNECTED)
+  {
+    UpdateDetails(db.GetBaseDBName(), db.GetType(), latestDb);
     return true;
+  }
 
   // failed to update or open the database
   db.Close();
@@ -262,10 +293,20 @@ bool CDatabaseManager::UpdateVersion(CDatabase &db, const std::string &dbName)
   return bReturn;
 }
 
-void CDatabaseManager::UpdateStatus(const std::string& name, DBStatus status)
+void CDatabaseManager::UpdateStatus(const std::string& basename, DBStatus status)
 {
   std::unique_lock lock(m_section);
-  m_dbStatus[name] = status;
+  m_dbDetails[basename].m_status = status;
+}
+
+void CDatabaseManager::UpdateDetails(const std::string& basename,
+                                     const std::string& type,
+                                     const std::string& name)
+{
+  std::unique_lock lock(m_section);
+  auto& entry{m_dbDetails[basename]};
+  entry.m_type = type;
+  entry.m_name = name;
 }
 
 void CDatabaseManager::LocalizationChanged()

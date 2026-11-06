@@ -15,7 +15,6 @@
 #include "URL.h"
 #include "Util.h"
 #include "addons/gui/GUIDialogAddonInfo.h"
-#include "application/Application.h"
 #include "dialogs/GUIDialogContextMenu.h"
 #include "dialogs/GUIDialogMediaSource.h"
 #include "dialogs/GUIDialogProgress.h"
@@ -26,6 +25,7 @@
 #include "guilib/WindowIDs.h"
 #include "input/actions/ActionIDs.h"
 #include "media/MediaLockState.h"
+#include "messaging/ApplicationMessenger.h"
 #include "playlists/PlayListFileItemClassify.h"
 #include "playlists/PlayListTypes.h"
 #include "settings/MediaSourceSettings.h"
@@ -176,6 +176,13 @@ void CGUIWindowGames::GetContextButtons(int itemNumber, CContextButtons& buttons
         buttons.Add(CONTEXT_BUTTON_PLAY_ITEM, 208); // Play
       }
 
+      // Offered on folders as well as games: setting one on a folder is the
+      // point, and a game only overrides the folder it sits in
+      if (item->IsFolder() || CanPlay(*item))
+      {
+        buttons.Add(CONTEXT_BUTTON_SET_DEFAULT_EMULATOR, 35510); // "Default emulator"
+      }
+
       if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
               CSettings::SETTING_FILELISTS_ALLOWFILEDELETION) &&
           !item->IsReadOnly())
@@ -206,6 +213,9 @@ bool CGUIWindowGames::OnContextButton(int itemNumber, CONTEXT_BUTTON button)
     {
       case CONTEXT_BUTTON_PLAY_ITEM:
         PlayGame(*item);
+        return true;
+      case CONTEXT_BUTTON_SET_DEFAULT_EMULATOR:
+        CGameUtils::ChooseAndSetDefaultGameClient(*item);
         return true;
       case CONTEXT_BUTTON_INFO:
         CGUIDialogAddonInfo::ShowForItem(item);
@@ -389,7 +399,9 @@ bool CGUIWindowGames::PlayGame(const CFileItem& item)
   if (PLAYLIST::IsPlayList(item))
     playlistId = PLAYLIST::Id::TYPE_GAME;
 
-  return g_application.PlayMedia(itemCopy, "", playlistId);
+  CServiceBroker::GetAppMessenger()->PostMsg(
+      TMSG_APPLICATION_PLAY_MEDIA, static_cast<int>(playlistId), -1, new CFileItem(itemCopy), "");
+  return true;
 }
 
 bool CGUIWindowGames::CanPlay(const CFileItem& item) const

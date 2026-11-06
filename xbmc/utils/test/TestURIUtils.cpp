@@ -43,6 +43,17 @@ TEST_F(TestURIUtils, PathHasParent)
   EXPECT_FALSE(URIUtils::PathHasParent("/path/to/movie.avi", "/path/2/"));
 }
 
+TEST_F(TestURIUtils, RemoveDiscPath)
+{
+  EXPECT_EQ("smb://somepath/Movie/",
+            URIUtils::RemoveDiscPath("smb://somepath/Movie/BDMV/index.bdmv"));
+  EXPECT_EQ("smb://somepath/Movie/",
+            URIUtils::RemoveDiscPath("smb://somepath/Movie/VIDEO_TS/VIDEO_TS.IFO"));
+  // base of a disc file sitting directly in the movie folder has no trailing slash
+  EXPECT_EQ("smb://somepath/Movie", URIUtils::RemoveDiscPath("smb://somepath/Movie/VIDEO_TS.IFO"));
+  EXPECT_EQ("", URIUtils::RemoveDiscPath("smb://somepath/Movie/movie.mkv"));
+}
+
 TEST_F(TestURIUtils, GetDirectory)
 {
   EXPECT_EQ("/path/to/", URIUtils::GetDirectory("/path/to/movie.avi"));
@@ -216,6 +227,13 @@ TEST_F(TestURIUtils, HasExtension)
 TEST_F(TestURIUtils, GetFileName)
 {
   EXPECT_EQ("movie.avi", URIUtils::GetFileName("/path/to/movie.avi"));
+}
+
+TEST_F(TestURIUtils, GetDecodedFileName)
+{
+  EXPECT_EQ("movie.avi", URIUtils::GetDecodedFileName("/path/to/movie.avi"));
+  EXPECT_EQ("the movie.avi", URIUtils::GetDecodedFileName("davs://host/the%20movie.avi"));
+  EXPECT_EQ("100% proof.avi", URIUtils::GetDecodedFileName("davs://host/100%25%20proof.avi"));
 }
 
 TEST_F(TestURIUtils, RemoveExtension)
@@ -1266,6 +1284,94 @@ TEST_F(TestURIUtils, AddFileToFolder)
   ref = "/path/to/file/and/more";
   var = URIUtils::AddFileToFolder("/path", "to", "file", "and", "more");
   EXPECT_EQ(ref, var);
+}
+
+TEST_F(TestURIUtils, AddFileToFolderMatchingEncodingEncodedFolder)
+{
+  // Base folders that report an encoded filename (e.g. WebDAV) must have any raw, human
+  // readable segment percent-encoded before being appended, otherwise the resulting URL
+  // ends up with mixed encoding (see xbmc/video/VideoInfoScanner.cpp GetMovieSetInfoFolder).
+  std::string ref = "davs://user:pass@host/Movie%20Set%20Information%20Folder/"
+                    "Star%20Wars%20Collection";
+  std::string var = URIUtils::AddFileToFolderMatchingEncoding(
+      "davs://user:pass@host/Movie%20Set%20Information%20Folder/", "Star Wars Collection");
+  EXPECT_EQ(ref, var);
+  // No literal space may remain in the filename portion of the URL.
+  EXPECT_EQ(std::string::npos, CURL(var).GetFileName().find(' '));
+
+  // Same for the non-secure WebDAV, http and https protocols.
+  ref = "dav://host/sets/Star%20Wars%20Collection";
+  var = URIUtils::AddFileToFolderMatchingEncoding("dav://host/sets/", "Star Wars Collection");
+  EXPECT_EQ(ref, var);
+
+  ref = "http://host/sets/Star%20Wars%20Collection";
+  var = URIUtils::AddFileToFolderMatchingEncoding("http://host/sets/", "Star Wars Collection");
+  EXPECT_EQ(ref, var);
+
+  ref = "https://host/sets/Star%20Wars%20Collection";
+  var = URIUtils::AddFileToFolderMatchingEncoding("https://host/sets/", "Star Wars Collection");
+  EXPECT_EQ(ref, var);
+
+  // A missing slash at the end of the folder is handled as by AddFileToFolder().
+  ref = "https://host/sets/Star%20Wars%20Collection";
+  var = URIUtils::AddFileToFolderMatchingEncoding("https://host/sets", "Star Wars Collection");
+  EXPECT_EQ(ref, var);
+
+  // An empty segment leaves the folder untouched (bar the trailing slash).
+  ref = "https://host/sets/";
+  var = URIUtils::AddFileToFolderMatchingEncoding("https://host/sets/", "");
+  EXPECT_EQ(ref, var);
+}
+
+TEST_F(TestURIUtils, AddFileToFolderMatchingEncodingSpecialCharacters)
+{
+  // Characters that are legal in a file name but not in a URL must be encoded as well,
+  // otherwise the server sees a query/fragment/separator instead of a name.
+  std::string ref = "https://host/sets/Fast%20%26%20Furious%20Collection";
+  std::string var =
+      URIUtils::AddFileToFolderMatchingEncoding("https://host/sets/", "Fast & Furious Collection");
+  EXPECT_EQ(ref, var);
+
+  ref = "https://host/sets/Marvel%27s%20Avengers";
+  var = URIUtils::AddFileToFolderMatchingEncoding("https://host/sets/", "Marvel's Avengers");
+  EXPECT_EQ(ref, var);
+
+  // A percent sign in the title must be escaped, not passed through as an escape sequence.
+  ref = "https://host/sets/100%25%20Collection";
+  var = URIUtils::AddFileToFolderMatchingEncoding("https://host/sets/", "100% Collection");
+  EXPECT_EQ(ref, var);
+
+  // Non-ASCII titles are encoded byte-wise (UTF-8, lowercase hex as produced by URLEncode).
+  ref = "https://host/sets/Am%c3%a9lie%20Collection";
+  var = URIUtils::AddFileToFolderMatchingEncoding("https://host/sets/", "Amélie Collection");
+  EXPECT_EQ(ref, var);
+
+  // Characters exempt from encoding per RFC1738 are kept verbatim.
+  ref = "https://host/sets/Alien-Quadrilogy_(1979).!";
+  var =
+      URIUtils::AddFileToFolderMatchingEncoding("https://host/sets/", "Alien-Quadrilogy_(1979).!");
+  EXPECT_EQ(ref, var);
+}
+
+TEST_F(TestURIUtils, AddFileToFolderMatchingEncodingUnencodedFolder)
+{
+  // Folders that don't use an encoded file name must behave exactly like AddFileToFolder(),
+  // i.e. the segment is appended verbatim and stays human readable.
+  const std::array<std::string, 5> folders = {"/home/user/sets/", "smb://host/share/sets/",
+                                              "nfs://host/export/sets/", "C:\\videos\\sets\\",
+                                              "ftp://host/sets/"};
+
+  const std::string title = "Star Wars Collection";
+  for (const auto& folder : folders)
+  {
+    const std::string var = URIUtils::AddFileToFolderMatchingEncoding(folder, title);
+    EXPECT_EQ(URIUtils::AddFileToFolder(folder, title), var) << "folder: " << folder;
+    EXPECT_NE(std::string::npos, var.find(title)) << "folder: " << folder;
+  }
+
+  // An empty folder is passed through unchanged as well.
+  EXPECT_EQ(URIUtils::AddFileToFolder("", "Star Wars Collection"),
+            URIUtils::AddFileToFolderMatchingEncoding("", "Star Wars Collection"));
 }
 
 TEST_F(TestURIUtils, HasParentInHostname)
@@ -2358,6 +2464,26 @@ TEST_F(TestURIUtils, CheckConsistencyBetweenFileNameUtilities)
     EXPECT_EQ("movie.avi", URIUtils_Split("nfs://127.0.0.1/srv/share/movie.avi|option=true"));
   }
   {
+    EXPECT_EQ("srv/share/#recently-added/movie.avi",
+              CURL("nfs://127.0.0.1/srv/share/#recently-added/movie.avi").GetFileName());
+
+    EXPECT_EQ("movie.avi",
+              URIUtils::GetFileName("nfs://127.0.0.1/srv/share/#recently-added/movie.avi"));
+    EXPECT_EQ("movie.avi",
+              CURL_FileName_URIUtils_Split("nfs://127.0.0.1/srv/share/#recently-added/movie.avi"));
+    EXPECT_EQ("movie.avi", URIUtils_Split("nfs://127.0.0.1/srv/share/#recently-added/movie.avi"));
+  }
+  {
+    EXPECT_EQ("srv/share/Comedy;Drama/movie.avi",
+              CURL("nfs://127.0.0.1/srv/share/Comedy;Drama/movie.avi").GetFileName());
+
+    EXPECT_EQ("movie.avi",
+              URIUtils::GetFileName("nfs://127.0.0.1/srv/share/Comedy;Drama/movie.avi"));
+    EXPECT_EQ("movie.avi",
+              CURL_FileName_URIUtils_Split("nfs://127.0.0.1/srv/share/Comedy;Drama/movie.avi"));
+    EXPECT_EQ("movie.avi", URIUtils_Split("nfs://127.0.0.1/srv/share/Comedy;Drama/movie.avi"));
+  }
+  {
     EXPECT_EQ("a:b", URIUtils::GetFileName("/hello/there/a:b"));
     EXPECT_EQ("a:b", CURL_FileName_URIUtils_Split("/hello/there/a:b"));
     EXPECT_EQ("a:b", URIUtils_Split("/hello/there/a:b"));
@@ -2594,4 +2720,15 @@ TEST_F(TestURIUtils, IsLocalOrLAN)
 
   // videodb:// is a virtual path - not HD, not LAN, not an internet stream
   EXPECT_FALSE(URIUtils::IsLocalOrLAN("videodb://tvshows/titles/1/1/42"));
+}
+
+TEST_F(TestURIUtils, GetDecodedPath)
+{
+  std::string encoded = "bluray://udf%3a%2f%2fsmb%253a%252f%252fsomepath%252fpath%252fmovie.iso%2f/BDMV/PLAYLIST/00800.mpls";
+  std::string decoded = "bluray://udf://smb://somepath/path/movie.iso//BDMV/PLAYLIST/00800.mpls";
+  EXPECT_EQ(decoded, URIUtils::GetDecodedPath(encoded));
+  
+  encoded = "bluray://smb%3a%2f%2fsomepath%2fpath%2f/BDMV/PLAYLIST/00800.mpls";
+  decoded = "bluray://smb://somepath/path//BDMV/PLAYLIST/00800.mpls";
+  EXPECT_EQ(decoded, URIUtils::GetDecodedPath(encoded));
 }
