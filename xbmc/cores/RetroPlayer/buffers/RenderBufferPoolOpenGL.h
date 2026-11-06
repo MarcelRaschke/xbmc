@@ -17,7 +17,6 @@ namespace KODI
 {
 namespace RETRO
 {
-class CRenderContext;
 class CRenderVideoSettings;
 
 class CRenderBufferPoolOpenGL : public CBaseRenderBufferPool
@@ -28,7 +27,6 @@ public:
 
   // Implementation of IRenderBufferPool via CBaseRenderBufferPool
   bool IsCompatible(const CRenderVideoSettings& renderSettings) const override;
-  void ConfigureHardware(bool depth, bool stencil) override;
 
 protected:
   // Implementation of CBaseRenderBufferPool
@@ -41,10 +39,6 @@ private:
   GLuint m_internalFormat = 0;
   GLuint m_pixelFormat = 0;
   GLuint m_bpp = 0;
-
-  // Hardware-rendering parameters (depth/stencil requested by the game core)
-  bool m_hwDepth = false;
-  bool m_hwStencil = false;
 };
 } // namespace RETRO
 } // namespace KODI

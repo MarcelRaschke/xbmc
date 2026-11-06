@@ -27,7 +27,6 @@ class CGameServices;
 
 namespace RETRO
 {
-class CCheevos;
 class CGUIGameMessenger;
 class CRetroPlayerInput;
 class CRPProcessInfo;
@@ -63,8 +62,6 @@ public:
   bool SeekTimeRelative(int64_t iTime) override;
   void SetSpeed(float speed) override;
   bool OnAction(const CAction& action) override;
-  std::string GetPlayerState() override;
-  bool SetPlayerState(const std::string& state) override;
   void FrameMove() override;
   void Render(bool clear, uint32_t alpha = 255, bool gui = true) override;
   bool IsRenderingVideo() const override;
@@ -89,7 +86,7 @@ public:
 
   // Implementation of IAutoSaveCallback
   bool IsAutoSaveEnabled() const override;
-  std::string CreateAutosave() override;
+  void RequestAutosave() override;
 
 private:
   void SetSpeedInternal(double speed);
@@ -137,7 +134,6 @@ private:
   std::unique_ptr<IPlayback> m_playback;
   std::unique_ptr<IPlaybackControl> m_playbackControl;
   std::unique_ptr<CRetroPlayerAutoSave> m_autoSave;
-  std::shared_ptr<CCheevos> m_cheevos;
 
   // Game parameters
   GAME::GameClientPtr m_gameClient;

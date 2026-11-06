@@ -11,8 +11,6 @@
 
 #include "LinuxRendererGL.h"
 
-#include "RenderCapture.h"
-#include "RenderCaptureGL.h"
 #include "RenderFactory.h"
 #include "ServiceBroker.h"
 #include "VideoShaders/VideoFilterShaderGL.h"
@@ -202,9 +200,9 @@ bool CLinuxRendererGL::ValidateRenderTarget()
     }
 
     // trigger update of video filters
-    m_scalingMethodGui = (ESCALINGMETHOD)-1;
+    m_scalingMethodGui = VS_SCALINGMETHOD_MAX;
 
-     // create the yuv textures
+    // create the yuv textures
     UpdateVideoFilter();
     LoadShaders();
     if (m_renderMethod < 0)
@@ -244,7 +242,7 @@ bool CLinuxRendererGL::Configure(const VideoPicture &picture, float fps, unsigne
   ManageRenderArea();
 
   m_bConfigured = true;
-  m_scalingMethodGui = (ESCALINGMETHOD)-1;
+  m_scalingMethodGui = VS_SCALINGMETHOD_MAX;
   m_scalingMethod = m_videoSettings.m_ScalingMethod;
 
   // Ensure that textures are recreated and rendering starts only after the 1st
@@ -790,7 +788,8 @@ void CLinuxRendererGL::UpdateVideoFilter()
 
   if (m_scalingMethodGui == m_videoSettings.m_ScalingMethod &&
       viewRect.Height() == m_lastViewRect.Height() && viewRect.Width() == m_lastViewRect.Width() &&
-      !nonLinStretchChanged && !cmsChanged)
+      srcRect.Height() == m_lastSourceRect.Height() &&
+      srcRect.Width() == m_lastSourceRect.Width() && !nonLinStretchChanged && !cmsChanged)
     return;
 
   // Reload shader when the scaling method, non-linear stretch state, or CMS
@@ -818,9 +817,11 @@ void CLinuxRendererGL::UpdateVideoFilter()
     }
   }
 
+  const ESCALINGMETHOD previousMethod = m_scalingMethod;
   m_scalingMethodGui = m_videoSettings.m_ScalingMethod;
   m_scalingMethod = m_scalingMethodGui;
   m_lastViewRect = viewRect;
+  m_lastSourceRect = srcRect;
 
   if (!Supports(m_scalingMethod))
   {
@@ -851,6 +852,9 @@ void CLinuxRendererGL::UpdateVideoFilter()
     else
       m_scalingMethod = VS_SCALINGMETHOD_LINEAR;
   }
+
+  if (m_scalingMethod != previousMethod)
+    m_reloadShaders = true;
 
   switch (m_scalingMethod)
   {
@@ -1313,15 +1317,24 @@ void CLinuxRendererGL::RenderToFBO(int index, int field, bool weave /*= false*/)
     LoadShaders(m_currentField);
   }
 
+  //! @todo Believed dead: every FBO invalidation clears m_bValidated, and
+  //! ValidateRenderTarget resets the filter cache so UpdateVideoFilter
+  //! recreates the FBO before any multipass render. Kept as a failsafe
+  //! against unenumerated invalidation paths.
   if (!m_fbo.fbo.IsValid())
   {
+    CLog::Log(LOGWARNING, "GL: multipass FBO invalid at render time, recreating");
+
     if (!m_fbo.fbo.Initialize())
     {
       CLog::Log(LOGERROR, "GL: Error initializing FBO");
       return;
     }
 
-    if (!m_fbo.fbo.CreateAndBindToTexture(GL_TEXTURE_2D, m_sourceWidth, m_sourceHeight, GL_RGBA, GL_SHORT))
+    // Recreate with the format/type UpdateVideoFilter settled on, so the
+    // intermediate FBO keeps the bit depth configured by hqscalerprecision.
+    if (!m_fbo.fbo.CreateAndBindToTexture(GL_TEXTURE_2D, m_sourceWidth, m_sourceHeight,
+                                          m_intermediateFormat, m_intermediateType, GL_NEAREST))
     {
       CLog::Log(LOGERROR, "GL: Error creating texture and binding to FBO");
       return;
@@ -1768,50 +1781,6 @@ void CLinuxRendererGL::RenderRGB(int index, int field)
 
   glBindTexture(m_textureTarget, 0);
 }
-
-bool CLinuxRendererGL::RenderCapture(int index, CRenderCapture* capture)
-{
-  if (!m_bValidated)
-    return false;
-
-  // save current video rect
-  CRect saveSize = m_destRect;
-
-  saveRotatedCoords();//backup current m_rotatedDestCoords
-
-  // new video rect is capture size
-  m_destRect.SetRect(0, 0, (float)capture->GetWidth(), (float)capture->GetHeight());
-  MarkDirty();
-  syncDestRectToRotatedPoints();//syncs the changed destRect to m_rotatedDestCoords
-
-  //invert Y axis to get non-inverted image
-  glDisable(GL_BLEND);
-  glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-
-  glMatrixModview.Push();
-  glMatrixModview->Translatef(0.0f, capture->GetHeight(), 0.0f);
-  glMatrixModview->Scalef(1.0f, -1.0f, 1.0f);
-  glMatrixModview.Load();
-
-  capture->BeginRender();
-
-  Render(RENDER_FLAG_NOOSD, index);
-  // read pixels
-  glReadPixels(0, CServiceBroker::GetWinSystem()->GetGfxContext().GetHeight() - capture->GetHeight(), capture->GetWidth(), capture->GetHeight(),
-               GL_BGRA, GL_UNSIGNED_BYTE, capture->GetRenderBuffer());
-
-  capture->EndRender();
-
-  // revert model view matrix
-  glMatrixModview.PopLoad();
-
-  // restore original video rect
-  m_destRect = saveSize;
-  restoreRotatedCoords();//restores the previous state of the rotated dest coords
-
-  return true;
-}
-
 
 GLint CLinuxRendererGL::GetInternalFormat(GLint format, int bpp)
 {
@@ -2677,8 +2646,11 @@ bool CLinuxRendererGL::Supports(ESCALINGMETHOD method) const
       method == VS_SCALINGMETHOD_LANCZOS3)
   {
     // if scaling is below level, avoid hq scaling
-    float scaleX = fabs(((float)m_sourceWidth - m_destRect.Width())/m_sourceWidth)*100;
-    float scaleY = fabs(((float)m_sourceHeight - m_destRect.Height())/m_sourceHeight)*100;
+    // Empty until ManageRenderArea has run, then the per-eye crop of a stereo source
+    CRect source =
+        m_sourceRect.IsEmpty() ? CRect(0, 0, m_sourceWidth, m_sourceHeight) : m_sourceRect;
+    float scaleX = fabs((source.Width() - m_destRect.Width()) / source.Width()) * 100;
+    float scaleY = fabs((source.Height() - m_destRect.Height()) / source.Height()) * 100;
     int minScale = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_HQSCALERS);
     if (scaleX < minScale && scaleY < minScale)
       return false;
@@ -2823,12 +2795,18 @@ void CLinuxRendererGL::CheckVideoParameters(int index)
   if (toneMap != m_toneMap || toneMapMethod != m_toneMapMethod)
   {
     m_reloadShaders = true;
+
+    //! @todo HACK for #28468; clean up properly in Piers beta 2
+    if (toneMap != m_toneMap)
+    {
+      VideoPicture tmp{};
+      tmp.color_space = toneMap ? AVCOL_SPC_UNSPECIFIED : buf.m_srcColSpace;
+      tmp.iWidth = m_sourceWidth;
+      tmp.iHeight = m_sourceHeight;
+      CServiceBroker::GetWinSystem()->SetColorimetry(&tmp);
+    }
+
     m_toneMap = toneMap;
     m_toneMapMethod = toneMapMethod;
   }
-}
-
-CRenderCapture* CLinuxRendererGL::GetRenderCapture()
-{
-  return new CRenderCaptureGL;
 }

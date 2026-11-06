@@ -179,7 +179,6 @@ bool CDRMUtils::FindGuiPlane(uint32_t format, uint64_t modifier)
                DRMHELPERS::ModifierToString(modifier), m_crtc->GetId());
     m_gui_plane->SetFormat(format);
     m_gui_plane->SetModifier(modifier);
-    m_video_plane = nullptr;
     return true;
   }
 
@@ -213,6 +212,8 @@ bool CDRMUtils::FindGuiPlane(uint32_t format, uint64_t modifier)
       plane->SetModifier(modifier);
       m_old_crtc = m_crtc;
       m_crtc = crtc;
+      if (m_video_plane)
+        CLog::LogF(LOGWARNING, "gui plane moved, releasing live D2P video plane reservation");
       m_video_plane = nullptr;
       m_gui_plane = plane.get();
       CLog::LogF(LOGINFO, "Using gui plane [{}x{}] id:{}, format:{}, modifier:{}, crtc id:{}",
@@ -496,8 +497,9 @@ bool CDRMUtils::OpenDrm(bool needConnector)
     if (renderPath)
     {
       m_renderDevicePath = renderPath;
+      close(m_renderFd);
       m_renderFd = open(renderPath, O_RDWR | O_CLOEXEC);
-      if (m_renderFd != 0)
+      if (m_renderFd >= 0)
         CLog::LogF(LOGDEBUG, "Opened render node: {}", renderPath);
     }
 

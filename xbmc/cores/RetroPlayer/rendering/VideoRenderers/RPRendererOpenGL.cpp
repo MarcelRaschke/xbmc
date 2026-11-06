@@ -136,6 +136,8 @@ void CRPRendererOpenGL::RenderInternal(bool clear, uint8_t alpha)
 
 void CRPRendererOpenGL::FlushInternal()
 {
+  m_RBTexturesMap.clear();
+
   if (!m_bConfigured)
     return;
 
@@ -277,7 +279,7 @@ void CRPRendererOpenGL::Render(uint8_t alpha)
   if (renderBuffer == nullptr)
     return;
 
-  Updateshaders();
+  UpdateShaders();
 
   // Use video shader preset
   if (m_bUseShaderPreset)
@@ -292,21 +294,7 @@ void CRPRendererOpenGL::Render(uint8_t alpha)
       m_lastTargetHeight = m_fullDestHeight;
     }
 
-    auto it = m_RBTexturesMap.find(renderBuffer);
-    if (it != m_RBTexturesMap.end())
-    {
-      // With dynamic resolution a buffer address can be recycled for a buffer of
-      // a different size or texture; drop the stale cached source texture.
-      const auto& cachedSource = it->second->sourceTexture;
-      if (cachedSource->GetTextureID() != renderBuffer->TextureID() ||
-          cachedSource->GetWidth() != static_cast<float>(renderBuffer->GetWidth()) ||
-          cachedSource->GetHeight() != static_cast<float>(renderBuffer->GetHeight()))
-      {
-        m_RBTexturesMap.erase(it);
-        it = m_RBTexturesMap.end();
-      }
-    }
-
+    const auto it = m_RBTexturesMap.find(renderBuffer);
     if (it != m_RBTexturesMap.end())
     {
       rbTextures = it->second.get();
@@ -407,16 +395,11 @@ void CRPRendererOpenGL::Render(uint8_t alpha)
     vertex[i].z = 0.0f;
   }
 
-  // Setup texture coordinates. Hardware-rendered FBOs have a bottom-left origin,
-  // so flip the vertical texture coordinates when presenting them.
-  const bool flipV = renderBuffer->IsHardware();
-  const float v1 = flipV ? rect.y2 : rect.y1;
-  const float v2 = flipV ? rect.y1 : rect.y2;
-
+  // Setup texture coordinates
   vertex[0].u1 = vertex[3].u1 = rect.x1;
-  vertex[0].v1 = vertex[1].v1 = v1;
+  vertex[0].v1 = vertex[1].v1 = rect.y1;
   vertex[1].u1 = vertex[2].u1 = rect.x2;
-  vertex[2].v1 = vertex[3].v1 = v2;
+  vertex[2].v1 = vertex[3].v1 = rect.y2;
 
   glBindVertexArray(m_mainVAO);
 

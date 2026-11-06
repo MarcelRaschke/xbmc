@@ -90,47 +90,23 @@ char* Interface_General::get_language(void* kodiBase, int format, bool region)
     return nullptr;
   }
 
-  std::string string = g_langInfo.GetEnglishLanguageName();
+  // The addon enum and the expander enum name the same three formats with the same values, and
+  // anything else has always been served as the English name
+  CLangCodeExpander::LANGFORMATS langFormat{CLangCodeExpander::ENGLISH_NAME};
   switch (format)
   {
     case LANG_FMT_ISO_639_1:
-    {
-      std::string langCode;
-      g_LangCodeExpander.ConvertToISO6391(string, langCode);
-      string = langCode;
-      if (region)
-      {
-        std::string region2Code;
-        g_LangCodeExpander.ConvertToISO6391(g_langInfo.GetRegionLocale(), region2Code);
-        if (!region2Code.empty())
-          string += "-" + region2Code;
-      }
+      langFormat = CLangCodeExpander::ISO_639_1;
       break;
-    }
     case LANG_FMT_ISO_639_2:
-    {
-      std::string langCode;
-      g_LangCodeExpander.ConvertToISO6392B(string, langCode);
-      string = langCode;
-      if (region)
-      {
-        std::string region3Code;
-        g_LangCodeExpander.ConvertToISO6392B(g_langInfo.GetRegionLocale(), region3Code);
-        if (!region3Code.empty())
-          string += "-" + region3Code;
-      }
+      langFormat = CLangCodeExpander::ISO_639_2;
       break;
-    }
     case LANG_FMT_ENGLISH_NAME:
     default:
-    {
-      if (region)
-        string += "-" + g_langInfo.GetCurrentRegion();
       break;
-    }
   }
 
-  return strdup(string.c_str());
+  return strdup(g_langInfo.GetLanguageAs(langFormat, region).c_str());
 }
 
 bool Interface_General::queue_notification(void* kodiBase, int type, const char* header,

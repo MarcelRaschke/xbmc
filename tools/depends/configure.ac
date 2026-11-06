@@ -2,10 +2,20 @@ AC_PREREQ(2.59)
 AC_INIT([xbmc-depends], [2.00], [https://github.com/xbmc/xbmc])
 :${CFLAGS=""}
 AC_CONFIG_AUX_DIR([build-aux])
-AC_CONFIG_FILES([native/config.site.native Makefile.include
+# Only touch Makefile.include's mtime if its content actually changed, since every
+# dependency's rebuild stamp depends on it and an unconditional rewrite here would
+# force a full rebuild of all dependencies on every ./configure run.
+AC_CONFIG_FILES([native/config.site.native
+                 Makefile.include.tmp:Makefile.include.in
                  target/config.site target/config-binaddons.site
                  target/Toolchain.cmake target/Toolchain_binaddons.cmake
                  native/Toolchain-Native.cmake])
+AC_CONFIG_COMMANDS([Makefile.include],
+  [if test -f Makefile.include && cmp -s Makefile.include.tmp Makefile.include; then
+     rm -f Makefile.include.tmp
+   else
+     mv -f Makefile.include.tmp Makefile.include
+   fi])
 AC_CANONICAL_HOST
 AC_CANONICAL_BUILD
 
@@ -185,7 +195,7 @@ case $build in
   *darwin*)
     build_os="osx"
     if test "x$build_cpu" = "xx86_64"; then
-      host_includes="-arch x86_64 -mmacosx-version-min=10.14"
+      host_includes="-arch x86_64 -mmacosx-version-min=10.15"
     else
       host_includes="-arch arm64 -mmacosx-version-min=11.0"
     fi
@@ -484,15 +494,21 @@ case $host in
 
     meson_system="darwin"
 
-    platform_ldflags="-Wl,-search_paths_first"
-
     case $use_platform in
       tvos)
         target_platform=appletvos
         platform_os="darwin_embedded"
       ;;
+      tvos-simulator)
+        target_platform=appletvsimulator
+        platform_os="darwin_embedded"
+      ;;
       ios)
         target_platform=iphoneos
+        platform_os="darwin_embedded"
+      ;;
+      ios-simulator)
+        target_platform=iphonesimulator
         platform_os="darwin_embedded"
       ;;
       macos)
@@ -509,6 +525,10 @@ case $host in
     use_sdk_path=$($use_xcrun --sdk $target_platform --show-sdk-path)
     sdk_name=$target_platform$use_sdk
 
+    platform_cflags="-ftree-vectorize -pipe -Wno-trigraphs -fpascal-strings -Wreturn-type -Wunused-variable -fmessage-length=0 -gdwarf-2 -Werror=unguarded-availability-new -Wunsupported-availability-guard"
+    optimize_flags="-O3"
+    platform_ldflags="-Wl,-search_paths_first -L$use_sdk_path/usr/lib"
+
     case $host in
       x86_64-apple-darwin)
         MC_CHECK_NOT_CPU([$use_cpu], "arm*")
@@ -521,7 +541,7 @@ case $host in
           AC_MSG_ERROR(invalid architecture (--with-cpu=$use_cpu))
         fi
 
-        target_minver="10.14"
+        target_minver="10.15"
       ;;
       aarch64-apple-darwin*)
         MC_CHECK_NOT_CPU([$use_cpu], "*86")
@@ -545,20 +565,17 @@ case $host in
         else
           AC_MSG_ERROR(invalid architecture (--with-cpu=$use_cpu))
         fi
-
-        platform_cflags="${platform_cflags} -ftree-vectorize -pipe -Wno-trigraphs -fpascal-strings"
-        platform_cflags="${platform_cflags} -Wreturn-type -Wunused-variable -fmessage-length=0 -gdwarf-2"
-        optimize_flags="-O3"
-        platform_ldflags="${platform_ldflags} -L$use_sdk_path/usr/lib"
       ;;
     esac
 
     AX_COMPARE_VERSION([$use_sdk], [ge], [$target_minver], , AC_MSG_ERROR("invalid SDK version provided (--with-sdk=$use_sdk) less than minimum supported ($target_minver)"))
 
     platform_min_version="$target_platform-version-min=$target_minver"
-
     platform_includes="-arch $use_cpu -m$platform_min_version -isysroot $use_sdk_path"
+
     platform_ldflags="${platform_ldflags} $platform_includes"
+    platform_cxxflags="$platform_cflags"
+
     deps_dir="${sdk_name}_${use_cpu}-target-${build_type}"
   ;;
   *)
@@ -566,7 +583,7 @@ case $host in
 esac
 
 case $use_platform in
-  ios|tvos|macos)
+  ios|ios-simulator|tvos|tvos-simulator|macos)
     ;;
   webos)
     ;;
@@ -906,13 +923,6 @@ EOF
 
 AC_OUTPUT
 
-if test "$platform_os" = "darwin_embedded"; then
-  if test "$use_platform" = "ios"; then
-    simulator_sdk_path=[`$use_xcrun --sdk iphonesimulator --show-sdk-path`]
-    echo -e "use simulator:\t $simulator_sdk_path"
-  fi
-fi
-
 cp -vf target/config.site $prefix/$deps_dir/share
 cp -vf target/config-binaddons.site $prefix/$tool_dir/share
 cp -vf target/Toolchain.cmake $prefix/$deps_dir/share
@@ -944,4 +954,10 @@ echo -e "depends:\t\t $prefix/$deps_dir"
 if test "$platform_os" = "android"; then
   echo -e "ndk-api-level:\t $use_ndk_api"
   echo -e "build-tools:\t $build_tools_path"
+fi
+if test "$platform_os" = "darwin_embedded"; then
+  if test "$use_platform" = "ios"; then
+    simulator_sdk_path=[`$use_xcrun --sdk iphonesimulator --show-sdk-path`]
+    echo -e "use simulator:\t $simulator_sdk_path"
+  fi
 fi

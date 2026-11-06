@@ -48,20 +48,15 @@ public:
   virtual void BindToUnit(unsigned int unit) {}
   virtual void SetHeader(void* header) {}
 
-  /*!
-   * \brief Ensure GPU work targeting this buffer has completed
-   *
-   * For hardware rendering the game core renders into this buffer's framebuffer
-   * on the game-loop thread. This is called on that thread before the buffer is
-   * handed to the render thread, so the rendered result is complete and visible
-   * across the shared GL context. No-op for software buffers.
-   */
-  virtual void SyncRender() {}
-
   // Buffer properties
   AVPixelFormat GetFormat() const { return m_format; }
   unsigned int GetWidth() const { return m_width; }
   unsigned int GetHeight() const { return m_height; }
+  void SetSize(unsigned int width, unsigned int height)
+  {
+    m_width = width;
+    m_height = height;
+  }
   bool IsLoaded() const { return m_bLoaded; }
   void SetLoaded(bool bLoaded) { m_bLoaded = bLoaded; }
   bool IsRendered() const { return m_bRendered; }

@@ -9,7 +9,6 @@
 #pragma once
 
 #include "DebugInfo.h"
-#include "RenderCapture.h"
 #include "RenderInfo.h"
 #include "VideoShaders/ShaderFormats.h"
 #include "cores/IPlayer.h"
@@ -45,6 +44,12 @@ enum RenderMethods
 
 struct VideoPicture;
 
+namespace KODI::RENDERING::CAPTURE
+{
+struct CaptureSpec;
+struct CaptureResult;
+} // namespace KODI::RENDERING::CAPTURE
+
 class CBaseRenderer
 {
 public:
@@ -62,12 +67,23 @@ public:
   virtual void ReleaseBuffer(int idx) { }
   virtual bool NeedBuffer(int idx) { return false; }
   virtual bool IsGuiLayer() { return true; }
-  virtual bool HasVideoPlane() { return !IsGuiLayer(); }
+  //! True when video never reaches the framebuffer: a DRM plane, an Android
+  //! SurfaceView, the Amlogic video layer. Such a renderer must produce its
+  //! own capture frame; every other renderer is served by reading the framebuffer.
+  virtual bool VideoBypassesFramebuffer() { return !IsGuiLayer(); }
+  //! \brief Render this renderer's video frame for screencap into result.
+  //! Overridden by renderers whose VideoBypassesFramebuffer() is true.
+  //! Default: capture unavailable.
+  virtual bool CaptureVideoFrame(const KODI::RENDERING::CAPTURE::CaptureSpec& spec,
+                                 KODI::RENDERING::CAPTURE::CaptureResult& result)
+  {
+    return false;
+  }
   // Render info, can be called before configure
   virtual CRenderInfo GetRenderInfo() { return CRenderInfo(); }
   virtual void Update() = 0;
-  virtual void RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha) = 0;
-  virtual bool RenderCapture(int index, CRenderCapture* capture) = 0;
+  virtual void RenderUpdate(
+      int index, int index2, bool clear, unsigned int flags, unsigned int alpha) = 0;
   virtual bool ConfigChanged(const VideoPicture &picture) = 0;
 
   // Feature support
@@ -97,8 +113,6 @@ public:
 
   // Gets debug info from render buffer
   virtual DEBUG_INFO_VIDEO GetDebugInfo(int idx) { return {}; }
-
-  virtual CRenderCapture* GetRenderCapture() { return nullptr; }
 
 protected:
   void CalcDestRect(float offsetX,

@@ -111,6 +111,13 @@ macro(buildFFMPEG)
                                         --win10=${win10})
     set(INSTALL_COMMAND ${CMAKE_COMMAND} -E true)
 
+    foreach(_ffmpeg_pkg IN ITEMS ${FFMPEG_PKGS})
+      string(REGEX REPLACE "[>]?=.*" "" _libname ${_ffmpeg_pkg})
+      string(REGEX REPLACE "^lib" "" _name ${_libname})
+      list(APPEND _ffmpeg_byproducts ${MINGW_LIBS_DIR}/lib/${_name}.lib)
+    endforeach()
+    set(BUILD_BYPRODUCTS ${_ffmpeg_byproducts})
+
     BUILD_DEP_TARGET()
 
     set(FFMPEG_INCLUDE_DIRS ${MINGW_LIBS_DIR}/include)
@@ -162,6 +169,13 @@ macro(buildFFMPEG)
     string(REPLACE ";" "|" ${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_MODULE_PATH "${CMAKE_MODULE_PATH}")
     set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_LIST_SEPARATOR LIST_SEPARATOR |)
 
+    # when cross-compiling (e.g. macOS x86_64 -> iOS device arm64), SDKROOT env var points to the target SDK
+    # this causes apple-clang to inject it as -isysroot to all invocations including host compiler checks
+    # in the aforementioned example the host compiler check fails because iOS SDK complains about x86_64 arch
+    if(XCODE)
+      set(extra_env_vars "SDKROOT=")
+    endif()
+
     set(CMAKE_ARGS -DCMAKE_MODULE_PATH=${FFMPEG_MODULE_PATH}
                    -DFFMPEG_VER=${FFMPEG_VER}
                    -DCORE_SYSTEM_NAME=${CORE_SYSTEM_NAME}
@@ -175,6 +189,7 @@ macro(buildFFMPEG)
                    -DCMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}
                    -DCMAKE_EXE_LINKER_FLAGS=${LINKER_FLAGS}
                    -DDISABLE_FFMPEG_SOURCE_PLUGINS=${DISABLE_FFMPEG_SOURCE_PLUGINS}
+                   -DEXTRA_ENV_VARS=${extra_env_vars}
                    ${CROSS_ARGS}
                    ${FFMPEG_OPTIONS}
                    -DPKG_CONFIG_PATH=${CMAKE_BINARY_DIR}/${CORE_BUILD_DIR}/lib/pkgconfig)
@@ -184,6 +199,9 @@ macro(buildFFMPEG)
                       COMMAND ${CMAKE_COMMAND} -E copy
                       ${CMAKE_SOURCE_DIR}/tools/depends/target/ffmpeg/002-ffmpeg-libavutil-common-h-cpp11-constant-macros.patch
                       <SOURCE_DIR>
+                      COMMAND ${CMAKE_COMMAND} -E copy
+                      ${CMAKE_SOURCE_DIR}/tools/depends/target/ffmpeg/008-ffmpeg-all-pgssubdec-use-caller-colorspace.patch
+                      <SOURCE_DIR>
     )
 
     if(NOT DISABLE_FFMPEG_SOURCE_PLUGINS)
@@ -192,10 +210,6 @@ macro(buildFFMPEG)
                                 <SOURCE_DIR>)
 
       set(postproc_pkg_config_search "postproc=`PKG_CONFIG_PATH=${DEPENDS_PATH}/lib/pkgconfig ${PKG_CONFIG_EXECUTABLE} --libs --static libpostproc`")
-    endif()
-
-    if(CMAKE_GENERATOR STREQUAL Xcode)
-      set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_GENERATOR CMAKE_GENERATOR "Unix Makefiles")
     endif()
 
     BUILD_DEP_TARGET()
@@ -220,8 +234,7 @@ macro(buildFFMPEG)
     ${postproc_pkg_config_search}
     swscale=`PKG_CONFIG_PATH=${DEPENDS_PATH}/lib/pkgconfig ${PKG_CONFIG_EXECUTABLE} --libs --static libswscale`
     swresample=`PKG_CONFIG_PATH=${DEPENDS_PATH}/lib/pkgconfig ${PKG_CONFIG_EXECUTABLE} --libs --static libswresample`
-    gnutls=`PKG_CONFIG_PATH=${DEPENDS_PATH}/lib/pkgconfig/ ${PKG_CONFIG_EXECUTABLE}  --libs-only-l --static --silence-errors gnutls`
-    ${xcode_linker} $@ $avcodec $avformat $avfilter $avutil $swscale $swresample $postproc $gnutls
+    ${xcode_linker} $@ $avcodec $avformat $avfilter $avutil $swscale $swresample $postproc
   else
     ${xcode_linker} $@
   fi")
@@ -261,7 +274,7 @@ macro(buildFFMPEG)
                                                 INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_INCLUDE_DIRS}")
 
       if(WIN32 OR WINDOWS_STORE)
-        string(REPLACE "lib" "" name ${_libname})
+        string(REGEX REPLACE "^lib" "" name ${_libname})
         set_target_properties(ffmpeg::${_libname} PROPERTIES
                                                   IMPORTED_LOCATION "${MINGW_LIBS_DIR}/lib/${name}.lib")
       endif()
@@ -281,13 +294,13 @@ else()
   # have latest version to properly track rebuiling.
   if(KODI_DEPENDSBUILD OR (WIN32 OR WINDOWS_STORE))
     # required ffmpeg library versions - tools/depends/target/ffmpeg versions
-    set(REQUIRED_FFMPEG_VERSION 8.1.2)
-    set(_avutil_ver "=60.26.102")
-    set(_avcodec_ver "=62.28.102")
-    set(_avformat_ver "=62.12.102")
-    set(_avfilter_ver "=11.14.102")
-    set(_swscale_ver "=9.5.102")
-    set(_swresample_ver "=6.3.102")
+    set(REQUIRED_FFMPEG_VERSION 9.0.2)
+    set(_avutil_ver "=61.1.102")
+    set(_avcodec_ver "=63.1.102")
+    set(_avformat_ver "=63.1.102")
+    set(_avfilter_ver "=12.1.102")
+    set(_swscale_ver "=10.1.102")
+    set(_swresample_ver "=7.1.102")
     set(_postproc_ver "=59.1.100")
   else()
     # required ffmpeg library versions - minimum supported API compat versions

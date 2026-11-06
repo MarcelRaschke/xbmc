@@ -8,8 +8,6 @@
 
 #include "LinuxRendererGLES.h"
 
-#include "RenderCapture.h"
-#include "RenderCaptureGLES.h"
 #include "RenderFactory.h"
 #include "ServiceBroker.h"
 #include "VideoShaders/VideoFilterShaderGLES.h"
@@ -48,7 +46,7 @@ CLinuxRendererGLES::CLinuxRendererGLES()
   std::tie(m_useDithering, m_ditherDepth) = CServiceBroker::GetWinSystem()->GetDitherSettings();
   if (m_useDithering)
   {
-    if (m_renderSystem && !m_renderSystem->IsExtSupported("GL_EXT_texture_norm16"))
+    if (m_renderSystem && !CGLExtensions::IsExtensionSupported(CGLExtensions::EXT_texture_norm16))
     {
       CLog::Log(LOGWARNING,
                 "GLES: dithering requested but GL_EXT_texture_norm16 not supported, disabling");
@@ -143,7 +141,10 @@ bool CLinuxRendererGLES::ValidateRenderTarget()
       DeleteTexture(i);
     }
 
-     // create the yuv textures
+    // trigger update of video filters
+    m_scalingMethodGui = VS_SCALINGMETHOD_MAX;
+
+    // create the yuv textures
     UpdateVideoFilter();
     LoadShaders();
 
@@ -199,7 +200,7 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
   ManageRenderArea();
 
   m_bConfigured = true;
-  m_scalingMethodGui = (ESCALINGMETHOD)-1;
+  m_scalingMethodGui = VS_SCALINGMETHOD_MAX;
   m_scalingMethod = m_videoSettings.m_ScalingMethod;
 
   // Ensure that textures are recreated and rendering starts only after the 1st
@@ -413,17 +414,26 @@ bool CLinuxRendererGLES::Flush(bool saveBuffers)
 {
   glFinish();
 
-  for (int i = 0; i < m_NumYUVBuffers; i++)
+  // When asked to save buffers, leave the currently held textures/picture
+  // references alone so the renderer can keep presenting the last frame.
+  if (!saveBuffers)
   {
-    DeleteTexture(i);
+    for (int i = 0; i < m_NumYUVBuffers; i++)
+    {
+      DeleteTexture(i);
+    }
+
+    m_iYUVRenderBuffer = 0;
+
+    // Only invalidate the render target when we actually tore the buffers
+    // down above.
+    m_bValidated = false;
   }
 
   glFinish();
-  m_bValidated = false;
   m_fbo.fbo.Cleanup();
-  m_iYUVRenderBuffer = 0;
 
-  return false;
+  return saveBuffers;
 }
 
 void CLinuxRendererGLES::Update()
@@ -702,7 +712,8 @@ void CLinuxRendererGLES::UpdateVideoFilter()
   // TODO: GL also checks nonLinStretchChanged and cmsChanged in the early exit
   // and the reload check below. Add when non-linear stretch and CMS are ported to GLES.
   if (m_scalingMethodGui == m_videoSettings.m_ScalingMethod &&
-      viewRect.Height() == m_lastViewRect.Height() && viewRect.Width() == m_lastViewRect.Width())
+      viewRect.Height() == m_lastViewRect.Height() && viewRect.Width() == m_lastViewRect.Width() &&
+      srcRect.Height() == m_lastSourceRect.Height() && srcRect.Width() == m_lastSourceRect.Width())
   {
     return;
   }
@@ -711,9 +722,11 @@ void CLinuxRendererGLES::UpdateVideoFilter()
   if (m_scalingMethod != m_videoSettings.m_ScalingMethod)
     m_reloadShaders = true;
 
+  const ESCALINGMETHOD previousMethod = m_scalingMethod;
   m_scalingMethodGui = m_videoSettings.m_ScalingMethod;
   m_scalingMethod = m_scalingMethodGui;
   m_lastViewRect = viewRect;
+  m_lastSourceRect = srcRect;
 
   if(!Supports(m_scalingMethod))
   {
@@ -750,6 +763,9 @@ void CLinuxRendererGLES::UpdateVideoFilter()
       m_scalingMethod = VS_SCALINGMETHOD_LINEAR;
   }
 
+  if (m_scalingMethod != previousMethod)
+    m_reloadShaders = true;
+
   switch (m_scalingMethod)
   {
   case VS_SCALINGMETHOD_NEAREST:
@@ -767,8 +783,11 @@ void CLinuxRendererGLES::UpdateVideoFilter()
     // On GLES 3.1+, FAST scalers use a single-pass combined YUV+convolution shader
     // (YUV2RGBFilterShader with textureGather). On lower versions, fall through to
     // multi-pass FBO path. Matches GL 4.0+ single-pass / GL <4.0 multi-pass pattern.
+    // On GLES, VAAPI maps to SHADER_NV12_RRG (GL maps it to SHADER_NV12).
+    // Only patterns the filter shader implements may pass: >8-bit planar
+    // (XBMC_YV12_HI) has no sampling block there and takes the multipass path.
     EShaderFormat fmt = GetShaderFormat();
-    if (fmt == SHADER_NV12 || (fmt >= SHADER_YV12 && fmt <= SHADER_YV12_16))
+    if (fmt == SHADER_NV12 || fmt == SHADER_NV12_RRG || fmt == SHADER_YV12)
     {
       uint32_t major, minor;
       m_renderSystem->GetRenderVersion(major, minor);
@@ -1311,16 +1330,24 @@ void CLinuxRendererGLES::RenderToFBO(int index, int field)
     LoadShaders(m_currentField);
   }
 
+  //! @todo Believed dead: every FBO invalidation clears m_bValidated, and
+  //! ValidateRenderTarget resets the filter cache so UpdateVideoFilter
+  //! recreates the FBO before any multipass render. Kept as a failsafe
+  //! against unenumerated invalidation paths.
   if (!m_fbo.fbo.IsValid())
   {
+    CLog::Log(LOGWARNING, "GLES: multipass FBO invalid at render time, recreating");
+
     if (!m_fbo.fbo.Initialize())
     {
       CLog::Log(LOGERROR, "GLES: Error initializing FBO");
       return;
     }
 
-    if (!m_fbo.fbo.CreateAndBindToTexture(GL_TEXTURE_2D, m_sourceWidth, m_sourceHeight, GL_RGBA,
-                                          GL_SHORT))
+    // Recreate with the format/type UpdateVideoFilter settled on, so the
+    // intermediate FBO keeps the bit depth configured by hqscalerprecision.
+    if (!m_fbo.fbo.CreateAndBindToTexture(GL_TEXTURE_2D, m_sourceWidth, m_sourceHeight,
+                                          m_intermediateFormat, m_intermediateType, GL_NEAREST))
     {
       CLog::Log(LOGERROR, "GLES: Error creating texture and binding to FBO");
       return;
@@ -1549,57 +1576,6 @@ void CLinuxRendererGLES::RenderFromFBO()
 
   glBindTexture(GL_TEXTURE_2D, 0);
   VerifyGLState();
-}
-
-bool CLinuxRendererGLES::RenderCapture(int index, CRenderCapture* capture)
-{
-  if (!m_bValidated)
-  {
-    return false;
-  }
-
-  // save current video rect
-  CRect saveSize = m_destRect;
-  saveRotatedCoords(); // backup current m_rotatedDestCoords
-
-  // new video rect is thumbnail size
-  m_destRect.SetRect(0, 0, static_cast<float>(capture->GetWidth()), static_cast<float>(capture->GetHeight()));
-  MarkDirty();
-  syncDestRectToRotatedPoints(); // syncs the changed destRect to m_rotatedDestCoords
-
-  // clear framebuffer and invert Y axis to get non-inverted image
-  glDisable(GL_BLEND);
-
-  glMatrixModview.Push();
-  glMatrixModview->Translatef(0.0f, capture->GetHeight(), 0.0f);
-  glMatrixModview->Scalef(1.0f, -1.0f, 1.0f);
-  glMatrixModview.Load();
-
-  capture->BeginRender();
-
-  Render(RENDER_FLAG_NOOSD, index);
-  // read pixels
-  glReadPixels(0, CServiceBroker::GetWinSystem()->GetGfxContext().GetHeight() - capture->GetHeight(), capture->GetWidth(), capture->GetHeight(),
-               GL_RGBA, GL_UNSIGNED_BYTE, capture->GetRenderBuffer());
-
-  // OpenGLES returns in RGBA order but CRenderCapture needs BGRA order
-  // XOR Swap RGBA -> BGRA
-  unsigned char* pixels = static_cast<unsigned char*>(capture->GetRenderBuffer());
-  for (unsigned int i = 0; i < capture->GetWidth() * capture->GetHeight(); i++, pixels += 4)
-  {
-    std::swap(pixels[0], pixels[2]);
-  }
-
-  capture->EndRender();
-
-  // revert model view matrix
-  glMatrixModview.PopLoad();
-
-  // restore original video rect
-  m_destRect = saveSize;
-  restoreRotatedCoords(); // restores the previous state of the rotated dest coords
-
-  return true;
 }
 
 //********************************************************************************************************/
@@ -2036,7 +2012,7 @@ void CLinuxRendererGLES::DeletePackedYUVTexture(int index)
 
 bool CLinuxRendererGLES::CreatePackedYUVTexture(int index)
 {
-  if (!CServiceBroker::GetRenderSystem()->IsExtSupported("GL_EXT_texture_format_BGRA8888"))
+  if (!CGLExtensions::IsExtensionSupported(CGLExtensions::EXT_texture_format_BGRA8888))
   {
     CLog::Log(LOGERROR, "CLinuxRendererGLES::CreatePackedYUVTexture - "
                         "GL_EXT_texture_format_BGRA8888 not supported");
@@ -2175,8 +2151,10 @@ bool CLinuxRendererGLES::SupportsMultiPassRendering()
 
 float CLinuxRendererGLES::ScalingAboveThreshold() const
 {
-  float scaleX = m_destRect.Width() / static_cast<float>(m_sourceWidth);
-  float scaleY = m_destRect.Height() / static_cast<float>(m_sourceHeight);
+  // Empty until ManageRenderArea has run, then the per-eye crop of a stereo source
+  CRect source = m_sourceRect.IsEmpty() ? CRect(0, 0, m_sourceWidth, m_sourceHeight) : m_sourceRect;
+  float scaleX = m_destRect.Width() / source.Width();
+  float scaleY = m_destRect.Height() / source.Height();
   float scaleFactor = (scaleX + scaleY) / 2.0f;
   float scalePercent = fabs(1.0f - scaleFactor) * 100;
   int minScale = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
@@ -2240,11 +2218,6 @@ bool CLinuxRendererGLES::IsGuiLayer()
   return !m_hdrFboActive;
 }
 
-CRenderCapture* CLinuxRendererGLES::GetRenderCapture()
-{
-  return new CRenderCaptureGLES;
-}
-
 void CLinuxRendererGLES::CheckVideoParameters(int index)
 {
   const CPictureBuffer& buf = m_buffers[index];
@@ -2268,6 +2241,17 @@ void CLinuxRendererGLES::CheckVideoParameters(int index)
   if (toneMap != m_toneMap || toneMapMethod != m_toneMapMethod)
   {
     m_reloadShaders = true;
+
+    //! @todo HACK for #28468; clean up properly in Piers beta 2
+    if (toneMap != m_toneMap)
+    {
+      VideoPicture tmp{};
+      tmp.color_space = toneMap ? AVCOL_SPC_UNSPECIFIED : buf.m_srcColSpace;
+      tmp.iWidth = m_sourceWidth;
+      tmp.iHeight = m_sourceHeight;
+      CServiceBroker::GetWinSystem()->SetColorimetry(&tmp);
+    }
+
     m_toneMap = toneMap;
     m_toneMapMethod = toneMapMethod;
   }

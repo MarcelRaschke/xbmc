@@ -372,7 +372,10 @@ void CSettings::InitializeOptionFillers()
 {
   // register setting option fillers
 #ifdef HAS_OPTICAL_DRIVE
-  GetSettingsManager()->RegisterSettingOptionsFiller("audiocdactions", MEDIA_DETECT::CAutorun::SettingOptionAudioCdActionsFiller);
+  GetSettingsManager()->RegisterSettingOptionsFiller(
+      "audiocdactions", MEDIA_DETECT::CAutorun::SettingOptionAudioCdActionsFiller);
+  GetSettingsManager()->RegisterSettingOptionsFiller(
+      "videodiscactions", MEDIA_DETECT::CAutorun::SettingOptionVideoDiscActionsFiller);
 #endif
   GetSettingsManager()->RegisterSettingOptionsFiller("charsets", CCharsetConverter::SettingOptionsCharsetsFiller);
   GetSettingsManager()->RegisterSettingOptionsFiller("fonts", GUIFontManager::SettingOptionsFontsFiller);
@@ -448,11 +451,14 @@ void CSettings::InitializeOptionFillers()
       "playerqueuetimesizes", CPlayerSettings::SettingOptionsQueueTimeSizesFiller);
   GetSettingsManager()->RegisterSettingOptionsFiller(
       "playerqueuedatasizes", CPlayerSettings::SettingOptionsQueueDataSizesFiller);
+  GetSettingsManager()->RegisterSettingOptionsFiller(
+      "playerfastforwardspeeds", CPlayerSettings::SettingOptionsFastForwardSpeeds);
 }
 
 void CSettings::UninitializeOptionFillers()
 {
   GetSettingsManager()->UnregisterSettingOptionsFiller("audiocdactions");
+  GetSettingsManager()->UnregisterSettingOptionsFiller("videodiscactions");
   GetSettingsManager()->UnregisterSettingOptionsFiller("audiocdencoders");
   GetSettingsManager()->UnregisterSettingOptionsFiller("charsets");
   GetSettingsManager()->UnregisterSettingOptionsFiller("fontheights");
@@ -502,6 +508,7 @@ void CSettings::UninitializeOptionFillers()
   GetSettingsManager()->UnregisterSettingOptionsFiller("filecachechunksizes");
   GetSettingsManager()->UnregisterSettingOptionsFiller("playerqueuetimesizes");
   GetSettingsManager()->UnregisterSettingOptionsFiller("playerqueuedatasizes");
+  GetSettingsManager()->UnregisterSettingOptionsFiller("playerfastforwardspeeds");
 }
 
 void CSettings::InitializeConditions()

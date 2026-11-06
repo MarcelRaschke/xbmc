@@ -18,7 +18,6 @@
 #include "addons/addoninfo/AddonType.h"
 #include "cores/DataCacheCore.h"
 #include "cores/IPlayerCallback.h"
-#include "cores/RetroPlayer/cheevos/Cheevos.h"
 #include "cores/RetroPlayer/guibridge/GUIGameMessenger.h"
 #include "cores/RetroPlayer/guibridge/GUIGameRenderManager.h"
 #include "cores/RetroPlayer/guiplayback/GUIPlaybackControl.h"
@@ -27,6 +26,7 @@
 #include "cores/RetroPlayer/playback/ReversiblePlayback.h"
 #include "cores/RetroPlayer/process/RPProcessInfo.h"
 #include "cores/RetroPlayer/rendering/RPRenderManager.h"
+#include "cores/RetroPlayer/rendering/RenderContext.h"
 #include "cores/RetroPlayer/savestates/ISavestate.h"
 #include "cores/RetroPlayer/savestates/SavestateDatabase.h"
 #include "cores/RetroPlayer/streams/RPStreamManager.h"
@@ -91,7 +91,7 @@ bool CRetroPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options
   }
 
   // Check if we should open in standalone mode
-  const bool bStandalone = fileCopy.GetPath().empty();
+  const bool bStandalone = fileCopy.GetDynPath().empty();
 
   m_processInfo = CRPProcessInfo::CreateInstance();
   if (!m_processInfo)
@@ -141,7 +141,7 @@ bool CRetroPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options
 
       if (!bStandalone)
       {
-        std::string redactedPath = CURL::GetRedacted(fileCopy.GetPath());
+        std::string redactedPath = CURL::GetRedacted(fileCopy.GetDynPath());
         CLog::Log(LOGINFO, "RetroPlayer[PLAYER]: Opening: {}", redactedPath);
         bSuccess = m_gameClient->OpenFile(fileCopy, *m_streamManager, m_input.get());
       }
@@ -194,12 +194,6 @@ bool CRetroPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options
     // Switch to fullscreen
     CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SWITCHTOFULLSCREEN);
 
-    m_cheevos = std::make_shared<CCheevos>(m_gameClient.get(),
-                                           m_gameServices.GameSettings().GetRAUsername(),
-                                           m_gameServices.GameSettings().GetRAToken());
-
-    m_cheevos->EnableRichPresence();
-
     // Initialize gameplay
     CreatePlayback(savestatePath);
     RegisterWindowCallbacks();
@@ -215,10 +209,10 @@ bool CRetroPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options
   else
   {
     m_input.reset();
-    m_streamManager.reset();
     if (m_gameClient)
       m_gameClient->Unload();
     m_gameClient.reset();
+    m_streamManager.reset();
   }
 
   return bSuccess;
@@ -228,6 +222,7 @@ bool CRetroPlayer::CloseFile(bool reopen /* = false */)
 {
   CLog::Log(LOGDEBUG, "RetroPlayer[PLAYER]: Closing file");
 
+  const bool autosaveEligible = m_autoSave && m_autoSave->HasInitialDelayElapsed();
   m_autoSave.reset();
 
   UnregisterWindowCallbacks();
@@ -236,21 +231,26 @@ bool CRetroPlayer::CloseFile(bool reopen /* = false */)
 
   std::unique_lock lock(m_mutex);
 
-  if (m_gameClient && m_gameServices.GameSettings().AutosaveEnabled())
+  if (m_playback)
+    m_playback->Quiesce();
+
+  if (autosaveEligible && m_gameClient && m_playback &&
+      m_gameServices.GameSettings().AutosaveEnabled())
   {
     std::string savePath = m_playback->CreateSavestate(true);
-    if (!savePath.empty())
+    const bool saved = m_playback->WaitForSavestates();
+    if (!savePath.empty() && saved)
       CLog::Log(LOGDEBUG, "RetroPlayer[SAVE]: Saved state to {}", CURL::GetRedacted(savePath));
     else
       CLog::Log(LOGDEBUG, "RetroPlayer[SAVE]: Failed to save state at close");
   }
 
+  if (m_playback)
+    m_playback->Deinitialize();
   m_playback.reset();
 
   if (m_input)
     m_input->StopAgentManager();
-
-  m_cheevos.reset();
 
   if (m_gameClient)
     m_gameClient->CloseFile();
@@ -262,6 +262,15 @@ bool CRetroPlayer::CloseFile(bool reopen /* = false */)
   if (m_gameClient)
     m_gameClient->Unload();
   m_gameClient.reset();
+
+  // A game client that renders on the GPU shares it with Kodi and releases its
+  // resources as it unloads, without restoring the state Kodi left set up. The
+  // global vertex array object matters most: every GUI draw is rejected while
+  // it is unbound, so the screen stays black after the game ends. Put Kodi's
+  // state back now that the client is gone, the same way Kodi does after a
+  // visualisation or screensaver add-on has had the context.
+  if (m_processInfo)
+    m_processInfo->GetRenderContext().ApplyStateBlock();
 
   m_renderManager.reset();
   if (m_processInfo)
@@ -430,14 +439,14 @@ bool CRetroPlayer::OnAction(const CAction& action)
   {
     case ACTION_PLAYER_RESET:
     {
-      if (m_gameClient)
+      std::unique_lock lock(m_mutex);
+      if (m_gameClient && m_playback)
       {
         float speed = static_cast<float>(m_playback->GetSpeed());
 
         m_playback->SetSpeed(0.0);
 
         CLog::Log(LOGDEBUG, "RetroPlayer[PLAYER]: Sending reset command via ACTION_PLAYER_RESET");
-        m_cheevos->ResetRuntime();
         m_gameClient->Input().HardwareReset();
 
         // If rewinding or paused, begin playback
@@ -463,27 +472,6 @@ bool CRetroPlayer::OnAction(const CAction& action)
   }
 
   return false;
-}
-
-std::string CRetroPlayer::GetPlayerState()
-{
-  std::string savestatePath;
-
-  if (m_autoSave)
-  {
-    savestatePath = m_playback->CreateSavestate(true);
-    if (savestatePath.empty())
-    {
-      CLog::Log(LOGDEBUG, "RetroPlayer[SAVE]: Continuing without saving");
-      m_autoSave.reset();
-    }
-  }
-  return savestatePath;
-}
-
-bool CRetroPlayer::SetPlayerState(const std::string& state)
-{
-  return m_playback->LoadSavestate(state);
 }
 
 void CRetroPlayer::FrameMove()
@@ -634,9 +622,9 @@ bool CRetroPlayer::IsAutoSaveEnabled() const
   return m_playback->GetSpeed() > 0.0;
 }
 
-std::string CRetroPlayer::CreateAutosave()
+void CRetroPlayer::RequestAutosave()
 {
-  return m_playback->CreateSavestate(true);
+  m_playback->RequestAutosave();
 }
 
 void CRetroPlayer::SetSpeedInternal(double speed)
@@ -655,6 +643,12 @@ void CRetroPlayer::OnSpeedChange(double newSpeed)
   m_input->SetSpeed(newSpeed);
   m_renderManager->SetSpeed(newSpeed);
   m_processInfo->SetSpeed(static_cast<float>(newSpeed));
+
+  // Told rather than asked, because a client can ask for this from any thread
+  // and at any point inside a call of its own, where reaching back into the
+  // player would mean locking against the thread that is driving it.
+  if (m_gameClient)
+    m_gameClient->SetPlaybackSpeed(newSpeed);
 }
 
 void CRetroPlayer::CreatePlayback(const std::string& savestatePath)
@@ -663,8 +657,8 @@ void CRetroPlayer::CreatePlayback(const std::string& savestatePath)
   {
     m_playback->Deinitialize();
     m_playback = std::make_unique<CReversiblePlayback>(
-        m_gameClient.get(), *m_renderManager, m_cheevos.get(), *m_guiMessenger,
-        m_gameClient->GetFrameRate(), m_gameClient->GetSerializeSize());
+        m_gameClient.get(), *m_renderManager, *m_guiMessenger, m_gameClient->GetFrameRate(),
+        m_gameClient->GetSerializeSize());
   }
   else
     ResetPlayback();
@@ -676,7 +670,7 @@ void CRetroPlayer::CreatePlayback(const std::string& savestatePath)
     {
       CLog::Log(LOGDEBUG, "RetroPlayer[SAVE]: Loading savestate");
 
-      if (!SetPlayerState(savestatePath))
+      if (!LoadSavestate(savestatePath))
         CLog::Log(LOGERROR, "RetroPlayer[SAVE]: Failed to load savestate");
     }
   }

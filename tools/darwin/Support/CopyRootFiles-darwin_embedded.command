@@ -16,9 +16,6 @@ SKINSYNC="rsync -aq --exclude .git* --exclude CVS* --exclude .svn* --exclude .cv
 # rsync command for including everything but the skins
 ADDONSYNC="rsync -aq --no-links --exclude .git* --exclude CVS* --exclude .svn* --exclude .cvsignore* --exclude .cvspass* --exclude .DS_Store* --exclude addons/skin.estuary --exclude addons/lib --exclude addons/share"
 
-# binary name is Kodi but we build Kodi.bin so to get a clean binary each time
-mv $TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/$EXECUTABLE_NAME.bin $TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/$EXECUTABLE_NAME
-
 mkdir -p "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/AppData/AppHome"
 mkdir -p "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/AppData/AppHome/addons"
 mkdir -p "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/AppData/AppHome/media"
@@ -32,9 +29,6 @@ ${SYNC} "$SRCROOT/privacy-policy.txt"  "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PAT
 ${SYNC} "$SRCROOT/xbmc/platform/darwin/Credits.html"  "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/AppData/"
 ${ADDONSYNC} "$SRCROOT/addons"  "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/AppData/AppHome"
 ${SYNC} "$SRCROOT/media"    "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/AppData/AppHome"
-
-# extracted eggs
-${SYNC} "$XBMC_DEPENDS/share/$APP_NAME/addons" "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/AppData/AppHome"
 
 # sync skin.estuary
 SYNCSKIN_B=${SKINSYNC}

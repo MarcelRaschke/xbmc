@@ -56,6 +56,7 @@
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/Variant.h"
+#include "utils/guilib/GUIContentUtils.h"
 #include "utils/log.h"
 #include "video/VideoDatabase.h"
 #include "video/VideoFileItemClassify.h"
@@ -232,6 +233,9 @@ bool CGUIWindowVideoBase::OnItemInfo(const CFileItem& fileItem)
   // "Videos/Video Add-ons" lists addons in the video window
   if (fileItem.HasAddonInfo())
     return CGUIDialogAddonInfo::ShowForItem(std::make_shared<CFileItem>(fileItem));
+
+  if (URIUtils::IsPVR(fileItem.GetPath()))
+    return KODI::UTILS::GUILIB::CGUIContentUtils::ShowInfoForItem(fileItem);
 
   // Video version
   if (fileItem.HasVideoInfoTag() && fileItem.GetVideoInfoTag()->m_type == MediaTypeVideoVersion)
@@ -684,7 +688,8 @@ void CGUIWindowVideoBase::OnRestartItem(int iItem, const std::string &player)
 
 void CGUIWindowVideoBase::LoadVideoInfo(CFileItemList& items,
                                         CVideoDatabase& database,
-                                        bool allowReplaceLabels)
+                                        bool allowReplaceLabels,
+                                        int getDetails)
 {
   //! @todo this could possibly be threaded as per the music info loading,
   //!       we could also cache the info
@@ -723,7 +728,7 @@ void CGUIWindowVideoBase::LoadVideoInfo(CFileItemList& items,
   bool fetchedPlayCounts = false;
   if (!content.empty())
   {
-    database.GetItemsForPath(content, items.GetPath(), dbItems);
+    database.GetItemsForPath(content, items.GetPath(), dbItems, getDetails);
 
     // Determine episode ranges for multi-episode items sharing the same basePath (same file).
     if (content == "episodes" && !dbItems.IsEmpty())
@@ -1386,24 +1391,37 @@ void CGUIWindowVideoBase::OnSearchItemFound(const CFileItem* pSelItem)
   }
   else
   {
-    std::string strPath = URIUtils::GetDirectory(pSelItem->GetPath());
+    const std::string selPath = pSelItem->GetPath();
+    std::string selPathWithSlash = selPath;
+    URIUtils::AddSlashAtEnd(selPathWithSlash);
+    const bool isMovieUrl = selPath.starts_with("videodb://movies/titles/") ||
+                            selPath.starts_with("videodb://movies/sets/");
+    const bool isVideoDb = VIDEO::IsVideoDb(*pSelItem);
+    const std::string parentPath = URIUtils::GetDirectory(selPath);
 
-    Update(strPath);
+    Update(parentPath);
 
     if (VIDEO::IsVideoDb(*pSelItem) &&
         CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
             CSettings::SETTING_MYVIDEOS_FLATTEN))
       SetHistoryForPath("");
     else
-      SetHistoryForPath(strPath);
+      SetHistoryForPath(parentPath);
 
     for (int i = 0; i < m_vecItems->Size(); i++)
     {
       CFileItemPtr pItem = m_vecItems->Get(i);
-      CURL url(pItem->GetPath());
-      if (VIDEO::IsVideoDb(*pSelItem))
+      const std::string itemPath = pItem->GetPath();
+      CURL url(itemPath);
+      if (isVideoDb)
         url.SetOptions("");
-      if (url.Get() == pSelItem->GetPath())
+      const std::string urlPath = url.Get();
+      // Relax match condition for movie with versions / extras
+      // The selected item looks like videodb://movies/titles/1234 but the list items look
+      // like videodb://movies/titles/1234/-2/
+      // Allow a match on the beginning of the string instead of an exact match.
+      // Same for movies in sets (url starts with videodb://movies/sets/)
+      if (urlPath == selPath || (isMovieUrl && urlPath.starts_with(selPathWithSlash)))
       {
         m_viewControl.SetSelectedItem(i);
         break;

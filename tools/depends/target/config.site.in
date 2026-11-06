@@ -1,7 +1,8 @@
 if test "@cross_compiling@" = "yes"; then
 cross_compiling=yes
-host=@use_host@
-host_alias=@use_host@
+# Defaults, not overrides: a package passing its own --host must win.
+: ${host=@use_host@}
+: ${host_alias=@use_host@}
 fi
 
 LD="@LD@"
@@ -83,11 +84,13 @@ if test "@platform_os@" = "darwin_embedded"; then
   fi
 fi
 
-if test "@target_platform@" = "appletvos"; then
-  ac_cv_func_sigaltstack=no
-  ac_cv_func_vfork_works=no
-  ac_cv_func_fork=no
-fi
+case "@target_platform@" in
+  appletv*)
+    ac_cv_func_sigaltstack=no
+    ac_cv_func_vfork_works=no
+    ac_cv_func_fork=no
+    ;;
+esac
 
 #Fix for older, broken android toolchains
 if test "${PACKAGE_NAME}" = "FreeType" -a "@platform_os@" = "android"; then

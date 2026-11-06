@@ -129,6 +129,24 @@ public:
   virtual bool IsSuspended() {return true;}
 
   /*!
+   * \brief Stop using the audio device so an external media pipeline can have it
+   *
+   * The device is closed but, unlike Suspend(), the engine stays configured and running.
+   * Streams and sounds can still be created, their output is discarded until the device is
+   * reclaimed. On true the device has been released when the call returns.
+   *
+   * \return True if the request was handled by the engine
+   */
+  virtual bool YieldDevice() { return false; }
+
+  /*!
+   * \brief Take the audio device back after it was yielded
+   *
+   * \return True if the request was handled by the engine
+   */
+  virtual bool ReclaimDevice() { return false; }
+
+  /*!
    * \brief Returns the current master volume level of the AudioEngine
    *
    * \return The volume level between 0.0 and 1.0
@@ -252,6 +270,11 @@ public:
    * \brief Instruct AE to re-initialize, e.g. after ELD change event
    */
   virtual void DeviceChange() {}
+
+  /*!
+   * \brief Notify AE that the system default output device changed
+   */
+  virtual void DefaultDeviceChange() {}
 
   /*!
    * \brief Instruct AE to re-initialize, e.g. after ELD change event
